@@ -1,0 +1,895 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reports | SessionSentinel</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/shared.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/reports.css') }}">
+</head>
+<body>
+  <div class="wrap">
+    {% include "_nav.html" %}
+
+    <section class="card reports-hero">
+      <h1>Financial Reports Dashboard</h1>
+      <p>Built from generated CSV/XLSX files only. Tailored for customs operations using your known BOE headers.</p>
+    </section>
+
+    <section class="card">
+      <h2>Data Source</h2>
+      <form method="get" action="{{ url_for('reports_dashboard') }}" class="source-form">
+        <div class="field">
+          <label>Run File</label>
+          <select name="job_id" id="job-id-select" required>
+            {% for item in report_files %}
+              <option value="{{ item.job_id }}" {% if item.job_id == selected_job_id %}selected{% endif %}>{{ item.job_id }} | {{ item.file_name }} ({{ item.file_key|upper }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label>File Type</label>
+          <select name="file_key" required>
+            <option value="csv" {% if selected_file_key == 'csv' %}selected{% endif %}>CSV (recommended)</option>
+            <option value="xlsx" {% if selected_file_key == 'xlsx' %}selected{% endif %}>XLSX</option>
+          </select>
+        </div>
+        <button type="submit">Build Report</button>
+      </form>
+      {% if not report_files %}
+        <div class="empty-state">No CSV/XLSX files available yet. Run a retrieval first.</div>
+      {% endif %}
+    </section>
+
+    {% if summary %}
+    <div class="report-tabs">
+      <button class="tab-btn active" data-tab="financial">Financial Report</button>
+      <button class="tab-btn" data-tab="account">Account Report</button>
+    </div>
+
+    <!-- FINANCIAL REPORT TAB -->
+    <div id="tab-financial" class="tab-content active">
+    <section class="metrics-grid">
+      <article class="metric card">
+        <div class="metric-label">Selected File</div>
+        <div class="metric-value metric-file">{{ selected_file_name }}</div>
+      </article>
+      <article class="metric card">
+        <div class="metric-label">Rows</div>
+        <div class="metric-value">{{ summary.total_rows }}</div>
+      </article>
+      <article class="metric card">
+        <div class="metric-label">Columns</div>
+        <div class="metric-value">{{ summary.total_columns }}</div>
+      </article>
+      <article class="metric card">
+        <div class="metric-label">Unique Job No.</div>
+        <div class="metric-value">{{ summary.unique_jobs }}</div>
+      </article>
+      <article class="metric card">
+        <div class="metric-label">Unique BoE No.</div>
+        <div class="metric-value">{{ summary.unique_boe }}</div>
+      </article>
+      <article class="metric card">
+        <div class="metric-label">Duplicate BoE No.</div>
+        <div class="metric-value">{{ summary.duplicate_boe_count }}</div>
+      </article>
+      <article class="metric card">
+        <div class="metric-label">Missing Job/BoE Rows</div>
+        <div class="metric-value">{{ summary.missing_core_count }}</div>
+      </article>
+    </section>
+
+    <section class="grid-2">
+      <article class="card">
+        <h2>Status Breakdown</h2>
+        {% if summary.status_breakdown %}
+        <canvas id="status-chart" height="180"></canvas>
+        {% else %}
+        <div class="empty-state">No Status values found in selected file.</div>
+        {% endif %}
+      </article>
+
+      <article class="card">
+        <h2>Regime Breakdown</h2>
+        {% if summary.regime_breakdown %}
+        <canvas id="regime-chart" height="180"></canvas>
+        {% else %}
+        <div class="empty-state">No Regime values found in selected file.</div>
+        {% endif %}
+      </article>
+    </section>
+
+    <section class="card">
+      <h2>Submission Timeline</h2>
+      {% if summary.timeline %}
+      <p class="subtle">Date column: <strong>{{ summary.timeline_label }}</strong> | Metric: <strong>Entries per day</strong></p>
+      <canvas id="timeline-chart" height="120"></canvas>
+      {% else %}
+      <div class="empty-state">No date-based timeline could be built from this file.</div>
+      {% endif %}
+    </section>
+
+    <section class="grid-2">
+      <article class="card">
+        <h2>Created By Breakdown</h2>
+        {% if summary.created_by_breakdown %}
+        <canvas id="creator-chart" height="180"></canvas>
+        {% else %}
+        <div class="empty-state">No Created By values found in selected file.</div>
+        {% endif %}
+      </article>
+
+      <article class="card">
+        <h2>Known Header Coverage</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Header</th>
+                <th>Detected</th>
+                <th>Non-Blank Count</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>Job No.</td><td>{{ 'Yes' if summary.known_columns_present.job_no else 'No' }}</td><td>{{ summary.non_blank_counts.job_no }}</td></tr>
+              <tr><td>BoE No.</td><td>{{ 'Yes' if summary.known_columns_present.boe_no else 'No' }}</td><td>{{ summary.non_blank_counts.boe_no }}</td></tr>
+              <tr><td>BL/AWB No.</td><td>{{ 'Yes' if summary.known_columns_present.bl_awb_no else 'No' }}</td><td>{{ summary.non_blank_counts.bl_awb_no }}</td></tr>
+              <tr><td>IMP. CODE/EXP. CODE</td><td>{{ 'Yes' if summary.known_columns_present.imp_exp_code else 'No' }}</td><td>{{ summary.non_blank_counts.imp_exp_code }}</td></tr>
+              <tr><td>Regime</td><td>{{ 'Yes' if summary.known_columns_present.regime else 'No' }}</td><td>-</td></tr>
+              <tr><td>Status</td><td>{{ 'Yes' if summary.known_columns_present.status else 'No' }}</td><td>-</td></tr>
+              <tr><td>Submission Date</td><td>{{ 'Yes' if summary.known_columns_present.submission_date else 'No' }}</td><td>-</td></tr>
+              <tr><td>Created By</td><td>{{ 'Yes' if summary.known_columns_present.created_by else 'No' }}</td><td>-</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <section class="card">
+      <div class="preview-header">
+        <h2>Preview (All Rows)</h2>
+        <div class="preview-controls">
+          <label for="preview-page-size">Page size</label>
+          <select id="preview-page-size">
+            {% for size in [10, 20, 50, 100, 200, 500] %}
+              <option value="{{ size }}" {% if summary.preview_page_size == size %}selected{% endif %}>{{ size }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <p class="subtle">Showing rows <span id="preview-start-row">{{ summary.preview_start_row }}</span> - <span id="preview-end-row">{{ summary.preview_end_row }}</span> of <span id="preview-total-rows">{{ summary.total_rows }}</span></p>
+      <div class="table-wrap">
+        <table id="preview-table">
+          <thead id="preview-table-head">
+            <tr>
+              {% for col in summary.preview_columns %}
+                <th>{{ col }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody id="preview-table-body">
+            {% for row in summary.preview_rows %}
+              <tr>
+                {% for col in summary.preview_columns %}
+                  <td>{{ row[col] }}</td>
+                {% endfor %}
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="preview-pagination">
+        <a id="prev-btn" class="page-btn {% if summary.preview_page <= 1 %}disabled{% endif %}">Previous</a>
+        <div id="page-buttons"></div>
+        <span class="page-indicator">Page <span id="current-page">{{ summary.preview_page }}</span> of <span id="total-pages">{{ summary.preview_total_pages }}</span></span>
+        <a id="next-btn" class="page-btn {% if summary.preview_page >= summary.preview_total_pages %}disabled{% endif %}">Next</a>
+      </div>
+    </section>
+    </div>
+
+    <!-- ACCOUNT REPORT TAB -->
+    <div id="tab-account" class="tab-content">
+      <div id="account-report-container">
+        <p class="subtle">Loading account report...</p>
+      </div>
+    </div>
+    {% endif %}
+
+    {% include "_footer.html" %}
+  </div>
+
+  <!-- Modal for assigning empty references -->
+  <div id="assign-modal" class="modal">
+    <div class="modal-content">
+      <span class="modal-close">&times;</span>
+      <h2>Assign Unassigned Entries</h2>
+      <p id="unassigned-message"></p>
+      <div class="modal-controls">
+        <label for="assign-select">Assign to account:</label>
+        <select id="assign-select"></select>
+        <button id="assign-confirm-btn" class="btn">Assign & Generate Report</button>
+      </div>
+    </div>
+  </div>
+
+  {% if summary %}
+  <script id="report-data" type="application/json">{{ {
+    "status": (summary.status_breakdown or []),
+    "regime": (summary.regime_breakdown or []),
+    "creator": (summary.created_by_breakdown or []),
+    "timeline": (summary.timeline or [])
+  }|tojson }}</script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script>
+    const reportDataEl = document.getElementById('report-data');
+    const reportData = reportDataEl ? JSON.parse(reportDataEl.textContent) : {};
+    const statusData = reportData.status || [];
+    const regimeData = reportData.regime || [];
+    const creatorData = reportData.creator || [];
+    const timeline = reportData.timeline || [];
+
+    if (statusData.length) {
+      new Chart(document.getElementById('status-chart'), {
+        type: 'bar',
+        data: {
+          labels: statusData.map((x) => x.label),
+          datasets: [{
+            label: 'Entries',
+            data: statusData.map((x) => x.count),
+            backgroundColor: '#17467d',
+            borderRadius: 6,
+          }],
+        },
+        options: { responsive: true, plugins: { legend: { display: false } } },
+      });
+    }
+
+    if (regimeData.length) {
+      new Chart(document.getElementById('regime-chart'), {
+        type: 'doughnut',
+        data: {
+          labels: regimeData.map((x) => x.label),
+          datasets: [{
+            data: regimeData.map((x) => x.count),
+            backgroundColor: ['#17467d', '#2a9d8f', '#c89a52', '#8f1a1a', '#5b7ea7', '#1d3557', '#7d5a2f', '#5b8f7a'],
+          }],
+        },
+        options: { responsive: true },
+      });
+    }
+
+    if (creatorData.length) {
+      new Chart(document.getElementById('creator-chart'), {
+        type: 'bar',
+        data: {
+          labels: creatorData.map((x) => x.label),
+          datasets: [{
+            label: 'Entries',
+            data: creatorData.map((x) => x.count),
+            backgroundColor: '#2a9d8f',
+            borderRadius: 6,
+          }],
+        },
+        options: { responsive: true, plugins: { legend: { display: false } } },
+      });
+    }
+
+    if (timeline.length) {
+      new Chart(document.getElementById('timeline-chart'), {
+        type: 'line',
+        data: {
+          labels: timeline.map((x) => x.date),
+          datasets: [{
+            label: 'Entries per day',
+            data: timeline.map((x) => x.count),
+            borderColor: '#17467d',
+            backgroundColor: 'rgba(23, 70, 125, 0.2)',
+            fill: true,
+            tension: 0.25,
+          }],
+        },
+        options: { responsive: true },
+      });
+    }
+
+    // AJAX pagination and page size handler
+    function buildPreviewTable() {
+      const jobId = new URLSearchParams(window.location.search).get('job_id');
+      const fileKey = new URLSearchParams(window.location.search).get('file_key');
+      const page = parseInt(document.getElementById('current-page').textContent);
+      const pageSize = document.getElementById('preview-page-size').value;
+
+      if (!jobId || !fileKey) return;
+
+      fetch(`/reports/preview?job_id=${encodeURIComponent(jobId)}&file_key=${encodeURIComponent(fileKey)}&page=${page}&page_size=${pageSize}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.error) {
+            console.error('Error:', data.error);
+            return;
+          }
+
+          // Update table headers
+          const thead = document.getElementById('preview-table-head');
+          thead.innerHTML = '<tr>' + data.preview_columns.map(col => `<th>${col}</th>`).join('') + '</tr>';
+
+          // Update table body
+          const tbody = document.getElementById('preview-table-body');
+          tbody.innerHTML = data.preview_rows.map(row => 
+            '<tr>' + data.preview_columns.map(col => `<td>${row[col] || ''}</td>`).join('') + '</tr>'
+          ).join('');
+
+          // Update pagination info
+          document.getElementById('preview-start-row').textContent = data.preview_start_row;
+          document.getElementById('preview-end-row').textContent = data.preview_end_row;
+          document.getElementById('preview-total-rows').textContent = data.total_rows;
+          document.getElementById('current-page').textContent = data.preview_page;
+          document.getElementById('total-pages').textContent = data.preview_total_pages;
+
+          // Update pagination buttons
+          renderPageButtons(data.preview_page, data.preview_total_pages);
+          updatePrevNextButtons(data.preview_page, data.preview_total_pages);
+        })
+        .catch(err => console.error('Fetch error:', err));
+    }
+
+    function renderPageButtons(currentPage, totalPages) {
+      const container = document.getElementById('page-buttons');
+      const startPage = Math.max(1, currentPage - 2);
+      const endPage = Math.min(totalPages, currentPage + 2);
+      let html = '';
+      
+      for (let p = startPage; p <= endPage; p++) {
+        const isActive = p === currentPage;
+        html += `<a class="page-btn ${isActive ? 'active' : ''}" data-page="${p}">${p}</a>`;
+      }
+      
+      container.innerHTML = html;
+
+      // Add click handlers
+      container.querySelectorAll('.page-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          const page = parseInt(btn.getAttribute('data-page'));
+          document.getElementById('current-page').textContent = page;
+          buildPreviewTable();
+        });
+      });
+    }
+
+    function updatePrevNextButtons(currentPage, totalPages) {
+      const prevBtn = document.getElementById('prev-btn');
+      const nextBtn = document.getElementById('next-btn');
+
+      prevBtn.classList.toggle('disabled', currentPage <= 1);
+      nextBtn.classList.toggle('disabled', currentPage >= totalPages);
+
+      prevBtn.onclick = (e) => {
+        e.preventDefault();
+        if (currentPage > 1) {
+          document.getElementById('current-page').textContent = currentPage - 1;
+          buildPreviewTable();
+        }
+      };
+
+      nextBtn.onclick = (e) => {
+        e.preventDefault();
+        if (currentPage < totalPages) {
+          document.getElementById('current-page').textContent = currentPage + 1;
+          buildPreviewTable();
+        }
+      };
+    }
+
+    // Handle page size change
+    document.getElementById('preview-page-size').addEventListener('change', () => {
+      document.getElementById('current-page').textContent = '1';  // Reset to page 1
+      buildPreviewTable();
+    });
+
+    // ===== ACCOUNT REPORT TAB FUNCTIONALITY =====
+    const tabBtns = document.querySelectorAll('.tab-btn');
+    const tabContents = document.querySelectorAll('.tab-content');
+
+    tabBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tabName = btn.getAttribute('data-tab');
+        
+        // Deactivate all tabs
+        tabBtns.forEach(b => b.classList.remove('active'));
+        tabContents.forEach(c => c.classList.remove('active'));
+        
+        // Activate selected tab
+        btn.classList.add('active');
+        document.getElementById(`tab-${tabName}`).classList.add('active');
+        
+        // Load account report if switching to it
+        if (tabName === 'account') {
+          loadAccountReport();
+        }
+      });
+    });
+
+    async function loadAccountReport() {
+      const jobId = new URLSearchParams(window.location.search).get('job_id');
+      const fileKey = new URLSearchParams(window.location.search).get('file_key');
+
+      if (!jobId || !fileKey) {
+        document.getElementById('account-report-container').innerHTML = `<p class="error">Missing job_id or file_key</p>`;
+        return;
+      }
+
+      try {
+        const res = await fetch(`/reports/account?job_id=${encodeURIComponent(jobId)}&file_key=${encodeURIComponent(fileKey)}`);
+        
+        if (!res.ok) {
+          const text = await res.text();
+          console.error(`API error ${res.status}:`, text);
+          document.getElementById('account-report-container').innerHTML = `<p class="error">Server error: ${res.status} - ${text.substring(0, 200)}</p>`;
+          return;
+        }
+
+        const data = await res.json();
+        console.log('Account report data:', data);
+
+        if (data.error) {
+          document.getElementById('account-report-container').innerHTML = `<p class="error">${data.error}</p>`;
+          return;
+        }
+
+        renderAccountReport(data, jobId, fileKey);
+      } catch (err) {
+        console.error('Error loading account report:', err);
+        document.getElementById('account-report-container').innerHTML = `<p class="error">Failed to load account report: ${err.message}</p>`;
+      }
+    }
+
+    function renderAccountReport(data, jobId, fileKey) {
+      let html = '';
+      const uncertainData = data.uncertain_matches || [];
+      const unassignedData = data.unassigned_rows || [];
+      const assignedData = data.assigned_rows || [];
+      const accountNames = (data.accounts || []).map(a => a.name);
+
+      function targetAccountSelect(cls, idx, selected = '') {
+        const options = accountNames
+          .map(name => `<option value="${name}" ${name === selected ? 'selected' : ''}>${name}</option>`)
+          .join('');
+        return `<select class="${cls}" data-idx="${idx}">${options}</select>`;
+      }
+
+      // Show error if present
+      if (data.error) {
+        html = `<p class="error">${data.error}</p>`;
+        document.getElementById('account-report-container').innerHTML = html;
+        return;
+      }
+
+      if (!data.accounts || data.accounts.length === 0) {
+        if (data.total_entries === 0) {
+          html = '<p class="empty-state">No entries found in this file.</p>';
+        } else {
+          html = `<p class="empty-state">No user references found. Total entries: ${data.total_entries}</p>`;
+        }
+        document.getElementById('account-report-container').innerHTML = html;
+        return;
+      }
+
+      html += '<div class="accounts-grid">';
+      
+      // Render each account card
+      data.accounts.forEach(account => {
+        const reasonText = (account.match_reasons && account.match_reasons.length)
+          ? account.match_reasons.join(', ')
+          : 'no reason available';
+        html += `
+          <div class="account-card">
+            <div class="account-header">
+              <h3>
+                ${account.name}
+                <span class="match-hint" title="Matched by: ${reasonText}">why?</span>
+              </h3>
+              <span class="account-count">${account.count} entries</span>
+            </div>
+            <div class="account-actions">
+              <button class="btn btn-rename account-rename" data-account="${encodeURIComponent(account.name)}">Rename</button>
+              <a href="/reports/account/download/${encodeURIComponent(account.name)}?job_id=${encodeURIComponent(jobId)}&file_key=${encodeURIComponent(fileKey)}" class="btn btn-download">Download</a>
+            </div>
+          </div>
+        `;
+      });
+
+      html += '</div>';
+
+      if (data.uncertain_count && data.uncertain_count > 0) {
+        const uncertainRows = uncertainData.slice(0, 60).map((item, idx) => `
+          <tr>
+            <td>${item.raw_user_ref || ''}</td>
+            <td>${item.suggested_account || ''}</td>
+            <td>${item.reason || ''}</td>
+            <td>${(item.confidence || 0).toFixed(2)}</td>
+            <td>${item.imp_code || ''}</td>
+            <td>${item.created_by || ''}</td>
+            <td>${item.boe || ''}</td>
+            <td>${item.date || ''}</td>
+            <td class="action-cell">
+              ${targetAccountSelect('uncertain-target', idx, item.suggested_account || '')}
+              <button class="uncertain-action uncertain-accept" data-idx="${idx}">Accept</button>
+              <button class="uncertain-action uncertain-separate" data-idx="${idx}">Separate</button>
+              <button class="uncertain-action uncertain-unassign" data-idx="${idx}">Unassign</button>
+              <button class="uncertain-action uncertain-reset" data-idx="${idx}">Reset</button>
+            </td>
+          </tr>
+        `).join('');
+
+        html += `
+          <div class="uncertain-section card">
+            <h2>Review Uncertain Matches (${data.uncertain_count})</h2>
+            <p class="subtle">These are auto-grouped with lower confidence. Please review before final reporting.</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Raw User Ref</th>
+                    <th>Suggested Account</th>
+                    <th>Reason</th>
+                    <th>Confidence</th>
+                    <th>IMP/EXP Code</th>
+                    <th>Created By</th>
+                    <th>BOE</th>
+                    <th>Submission Date</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${uncertainRows}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        `;
+      }
+
+      // Assigned rows review table for manual moves.
+      if (assignedData.length > 0) {
+        const assignedRowsHtml = assignedData.slice(0, 120).map((item, idx) => `
+          <tr>
+            <td>${item.current_account || ''}</td>
+            <td>${item.user_ref_raw || ''}</td>
+            <td>${item.imp_code || ''}</td>
+            <td>${item.created_by || ''}</td>
+            <td>${item.boe || ''}</td>
+            <td>${item.date || ''}</td>
+            <td>${(item.confidence || 0).toFixed(2)}</td>
+            <td class="action-cell">
+              ${targetAccountSelect('assigned-target', idx, item.current_account || '')}
+              <button class="uncertain-action assigned-move" data-idx="${idx}">Move</button>
+              <button class="uncertain-action assigned-unassign" data-idx="${idx}">Unassign</button>
+              <button class="uncertain-action assigned-reset" data-idx="${idx}">Reset</button>
+            </td>
+          </tr>
+        `).join('');
+
+        html += `
+          <div class="uncertain-section card">
+            <h2>Move Categorized Rows</h2>
+            <p class="subtle">Reassign rows between account names, then table refreshes immediately.</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Current Account</th>
+                    <th>User Ref</th>
+                    <th>IMP/EXP Code</th>
+                    <th>Created By</th>
+                    <th>BOE</th>
+                    <th>Submission Date</th>
+                    <th>Confidence</th>
+                    <th>Move To</th>
+                  </tr>
+                </thead>
+                <tbody>${assignedRowsHtml}</tbody>
+              </table>
+            </div>
+          </div>
+        `;
+      }
+
+      // Unassigned rows table with per-row assignment.
+      if (data.has_unassigned) {
+        const unassignedRowsHtml = unassignedData.slice(0, 120).map((item, idx) => `
+          <tr>
+            <td>${item.user_ref_raw || '(empty)'}</td>
+            <td>${item.imp_code || ''}</td>
+            <td>${item.created_by || ''}</td>
+            <td>${item.boe || ''}</td>
+            <td>${item.date || ''}</td>
+            <td class="action-cell">
+              ${targetAccountSelect('unassigned-target', idx)}
+              <button class="uncertain-action unassigned-assign" data-idx="${idx}">Assign</button>
+            </td>
+          </tr>
+        `).join('');
+
+        html += `
+          <div class="unassigned-section">
+            <h2>Unassigned Entries</h2>
+            <p class="subtle">${data.unassigned_count} entries with no user reference</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>User Ref</th>
+                    <th>IMP/EXP Code</th>
+                    <th>Created By</th>
+                    <th>BOE</th>
+                    <th>Submission Date</th>
+                    <th>Assign To</th>
+                  </tr>
+                </thead>
+                <tbody>${unassignedRowsHtml}</tbody>
+              </table>
+            </div>
+            <button id="assign-empty-btn" class="btn btn-primary">Assign All Remaining Unassigned</button>
+          </div>
+        `;
+      } else {
+        html += '<p class="success">All entries assigned!</p>';
+      }
+
+      document.getElementById('account-report-container').innerHTML = html;
+
+      document.querySelectorAll('.account-rename').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const current = decodeURIComponent(btn.getAttribute('data-account') || '');
+          const renamed = window.prompt('Rename account:', current);
+          if (!renamed || !renamed.trim() || renamed.trim().toUpperCase() === current.toUpperCase()) {
+            return;
+          }
+          await renameAccount(current, renamed.trim());
+        });
+      });
+
+      if (data.uncertain_count && data.uncertain_count > 0) {
+        document.querySelectorAll('.uncertain-accept').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            const item = uncertainData[parseInt(btn.getAttribute('data-idx'), 10)];
+            if (!item) return;
+            const idx = parseInt(btn.getAttribute('data-idx'), 10);
+            const select = document.querySelector(`.uncertain-target[data-idx="${idx}"]`);
+            const target = select ? select.value : item.suggested_account;
+            await saveUncertainDecision(item.raw_user_ref, target, 'accept', {
+              imp_code: item.imp_code,
+              created_by: item.created_by,
+              boe: item.boe,
+              decision_ref_key: item.decision_ref_key,
+            });
+          });
+        });
+
+        document.querySelectorAll('.uncertain-separate').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            const item = uncertainData[parseInt(btn.getAttribute('data-idx'), 10)];
+            if (!item) return;
+            const custom = window.prompt('Enter account name to keep this reference separate:', item.raw_user_ref || '');
+            if (!custom || !custom.trim()) return;
+            await saveUncertainDecision(item.raw_user_ref, custom.trim(), 'separate', {
+              imp_code: item.imp_code,
+              created_by: item.created_by,
+              boe: item.boe,
+              decision_ref_key: item.decision_ref_key,
+            });
+          });
+        });
+
+        document.querySelectorAll('.uncertain-unassign').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            const item = uncertainData[parseInt(btn.getAttribute('data-idx'), 10)];
+            if (!item) return;
+            await saveUncertainDecision(item.raw_user_ref, '', 'unassign', {
+              imp_code: item.imp_code,
+              created_by: item.created_by,
+              boe: item.boe,
+              decision_ref_key: item.decision_ref_key,
+            });
+          });
+        });
+
+        document.querySelectorAll('.uncertain-reset').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            const item = uncertainData[parseInt(btn.getAttribute('data-idx'), 10)];
+            if (!item) return;
+            await saveUncertainDecision(item.raw_user_ref, '', 'reset', {
+              imp_code: item.imp_code,
+              created_by: item.created_by,
+              boe: item.boe,
+              decision_ref_key: item.decision_ref_key,
+            });
+          });
+        });
+      }
+
+      document.querySelectorAll('.assigned-move').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const idx = parseInt(btn.getAttribute('data-idx'), 10);
+          const item = assignedData[idx];
+          if (!item) return;
+          const select = document.querySelector(`.assigned-target[data-idx="${idx}"]`);
+          const target = select ? select.value : '';
+          if (!target || target === item.current_account) {
+            return;
+          }
+          await saveUncertainDecision(item.user_ref_raw, target, 'separate', {
+            imp_code: item.imp_code,
+            created_by: item.created_by,
+            boe: item.boe,
+            decision_ref_key: item.decision_ref_key,
+          });
+        });
+      });
+
+      document.querySelectorAll('.assigned-unassign').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const idx = parseInt(btn.getAttribute('data-idx'), 10);
+          const item = assignedData[idx];
+          if (!item) return;
+          await saveUncertainDecision(item.user_ref_raw, '', 'unassign', {
+            imp_code: item.imp_code,
+            created_by: item.created_by,
+            boe: item.boe,
+            decision_ref_key: item.decision_ref_key,
+          });
+        });
+      });
+
+      document.querySelectorAll('.assigned-reset').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const idx = parseInt(btn.getAttribute('data-idx'), 10);
+          const item = assignedData[idx];
+          if (!item) return;
+          await saveUncertainDecision(item.user_ref_raw, '', 'reset', {
+            imp_code: item.imp_code,
+            created_by: item.created_by,
+            boe: item.boe,
+            decision_ref_key: item.decision_ref_key,
+          });
+        });
+      });
+
+      document.querySelectorAll('.unassigned-assign').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const idx = parseInt(btn.getAttribute('data-idx'), 10);
+          const item = unassignedData[idx];
+          if (!item) return;
+          const select = document.querySelector(`.unassigned-target[data-idx="${idx}"]`);
+          const target = select ? select.value : '';
+          if (!target) return;
+          const raw = (item.user_ref_raw && item.user_ref_raw.trim()) ? item.user_ref_raw : '';
+          await saveUncertainDecision(raw, target, 'separate', {
+            imp_code: item.imp_code,
+            created_by: item.created_by,
+            boe: item.boe,
+          });
+        });
+      });
+
+      // Attach handler for assign button
+      if (data.has_unassigned) {
+        document.getElementById('assign-empty-btn').addEventListener('click', () => {
+          showAssignModal(data.accounts);
+        });
+      }
+    }
+
+    async function saveUncertainDecision(rawUserRef, canonicalAccount, action, context = {}) {
+      try {
+        const res = await fetch('/reports/account/decision', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            raw_user_ref: rawUserRef,
+            canonical_account: canonicalAccount,
+            action,
+            imp_code: context.imp_code || '',
+            created_by: context.created_by || '',
+            boe: context.boe || '',
+            decision_ref_key: context.decision_ref_key || '',
+          }),
+        });
+        const payload = await res.json();
+        if (!res.ok || !payload.success) {
+          alert(payload.error || 'Unable to save decision');
+          return;
+        }
+        await loadAccountReport();
+      } catch (err) {
+        console.error('Decision save failed:', err);
+        alert('Unable to save decision');
+      }
+    }
+
+    async function renameAccount(oldAccount, newAccount) {
+      const jobId = new URLSearchParams(window.location.search).get('job_id');
+      const fileKey = new URLSearchParams(window.location.search).get('file_key');
+      try {
+        const res = await fetch('/reports/account/rename', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            job_id: jobId,
+            file_key: fileKey,
+            old_account: oldAccount,
+            new_account: newAccount,
+          }),
+        });
+        const payload = await res.json();
+        if (!res.ok || !payload.success) {
+          alert(payload.error || 'Unable to rename account');
+          return;
+        }
+        await loadAccountReport();
+      } catch (err) {
+        console.error('Rename failed:', err);
+        alert('Unable to rename account');
+      }
+    }
+
+    function showAssignModal(accounts) {
+      const modal = document.getElementById('assign-modal');
+      const select = document.getElementById('assign-select');
+      
+      select.innerHTML = '';
+      accounts.forEach(account => {
+        const option = document.createElement('option');
+        option.value = account.name;
+        option.textContent = account.name;
+        select.appendChild(option);
+      });
+
+      modal.style.display = 'block';
+    }
+
+    // Modal close handlers
+    document.querySelector('.modal-close').addEventListener('click', () => {
+      document.getElementById('assign-modal').style.display = 'none';
+    });
+
+    window.addEventListener('click', (event) => {
+      const modal = document.getElementById('assign-modal');
+      if (event.target === modal) {
+        modal.style.display = 'none';
+      }
+    });
+
+    // Confirm assignment
+    document.getElementById('assign-confirm-btn').addEventListener('click', async () => {
+      const jobId = new URLSearchParams(window.location.search).get('job_id');
+      const fileKey = new URLSearchParams(window.location.search).get('file_key');
+      const assignTo = document.getElementById('assign-select').value;
+
+      try {
+        const res = await fetch('/reports/account/assign', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            job_id: jobId,
+            file_key: fileKey,
+            assign_to: assignTo
+          })
+        });
+
+        const data = await res.json();
+        if (data.success) {
+          document.getElementById('assign-modal').style.display = 'none';
+          // Reload account report
+          loadAccountReport();
+        }
+      } catch (err) {
+        console.error('Error assigning:', err);
+      }
+    });
+  </script>
+  {% endif %}
+</body>
+</html>

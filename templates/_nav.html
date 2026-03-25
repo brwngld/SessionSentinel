@@ -1,0 +1,34 @@
+<section class="card animated-card">
+  <div class="nav-shell">
+    <a class="brand" href="{{ url_for('index') }}">Session<span>Sentinel</span></a>
+    <div class="nav-links">
+      <a href="{{ url_for('index') }}#run-export">Run Retrieval</a>
+      <a href="{{ url_for('index') }}#saved-searches">Saved</a>
+      <a href="{{ url_for('reports_dashboard') }}">Reports</a>
+      <a href="{{ url_for('index') }}#account">Account</a>
+      <a href="{{ url_for('index') }}#activity">Activity</a>
+      {% if is_admin %}
+      <a href="{{ url_for('admin_users') }}">Users</a>
+      <a href="{{ url_for('admin_audit') }}">Audit</a>
+      <a href="{{ url_for('admin_session_log') }}">Log</a>
+      {% endif %}
+    </div>
+    <div class="actions">
+      <a class="profile-link" href="{{ url_for('profile') }}">
+        <span class="role-badge role-badge-icon-only {% if is_admin %}role-badge-admin{% else %}role-badge-member{% endif %}" aria-hidden="true"><span class="role-badge-icon">{% if is_admin %}&#128737;{% else %}&#128100;{% endif %}</span></span>
+        <span class="role-badge role-badge-user">@{{ current_user.id }}</span>
+      </a>
+      <form class="inline-form" method="post" action="/logout">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">Logout</button>
+      </form>
+    </div>
+  </div>
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, message in messages %}
+        <div class="flash {{ category }}">{{ message }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+</section>

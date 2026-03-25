@@ -1,0 +1,739 @@
+import base64
+import json
+import os
+import sqlite3
+from datetime import datetime, timedelta, timezone
+
+from cryptography.fernet import Fernet
+
+from config import CREDENTIAL_ENCRYPTION_KEY, DATABASE_PATH
+
+DB_PATH = DATABASE_PATH if os.path.isabs(DATABASE_PATH) else os.path.join(os.path.dirname(__file__), DATABASE_PATH)
+DB_DIR = os.path.dirname(DB_PATH)
+if DB_DIR:
+    os.makedirs(DB_DIR, exist_ok=True)
+
+
+def _build_fernet():
+    key = CREDENTIAL_ENCRYPTION_KEY.strip()
+    if not key:
+        key = Fernet.generate_key().decode("utf-8")
+
+    try:
+        return Fernet(key.encode("utf-8"))
+    except Exception:
+        derived = base64.urlsafe_b64encode(key.encode("utf-8").ljust(32, b"0")[:32])
+        return Fernet(derived)
+
+
+_FERNET = _build_fernet()
+
+
+def _connect():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_users (
+                user_id TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                failed_attempts INTEGER NOT NULL DEFAULT 0,
+                locked_until TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        existing_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(app_users)").fetchall()
+        }
+        if "role" not in existing_cols:
+            conn.execute("ALTER TABLE app_users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+        if "is_active" not in existing_cols:
+            conn.execute("ALTER TABLE app_users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+        if "must_change_password" not in existing_cols:
+            conn.execute("ALTER TABLE app_users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0")
+        if "password_changed_at" not in existing_cols:
+            conn.execute("ALTER TABLE app_users ADD COLUMN password_changed_at TEXT")
+            conn.execute(
+                "UPDATE app_users SET password_changed_at = ? WHERE password_changed_at IS NULL",
+                (datetime.now(timezone.utc).isoformat(),),
+            )
+        if "email" not in existing_cols:
+            conn.execute("ALTER TABLE app_users ADD COLUMN email TEXT")
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS portal_credentials (
+                user_id TEXT PRIMARY KEY,
+                portal_username TEXT NOT NULL,
+                portal_password_encrypted TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_time TEXT NOT NULL,
+                user_id TEXT,
+                event_type TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                source_ip TEXT,
+                details TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS retrieval_runs (
+                job_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                last_message TEXT,
+                row_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                ended_at TEXT,
+                payload_json TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS generated_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                file_key TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                mime_type TEXT,
+                file_blob BLOB NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(job_id, user_id, file_key)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS account_alias_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                ref_key TEXT NOT NULL,
+                canonical_account TEXT NOT NULL,
+                decision_type TEXT NOT NULL DEFAULT 'accept',
+                updated_at TEXT NOT NULL,
+                UNIQUE(user_id, ref_key)
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def upsert_account_alias_rule(user_id, ref_key, canonical_account, decision_type="accept"):
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO account_alias_rules (user_id, ref_key, canonical_account, decision_type, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, ref_key)
+            DO UPDATE SET
+                canonical_account=excluded.canonical_account,
+                decision_type=excluded.decision_type,
+                updated_at=excluded.updated_at
+            """,
+            (user_id, ref_key, canonical_account, decision_type, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_account_alias_rules_for_user(user_id):
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT ref_key, canonical_account, decision_type
+            FROM account_alias_rules
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [dict(row) for row in rows]
+
+
+def delete_account_alias_rule(user_id, ref_key):
+    conn = _connect()
+    try:
+        cursor = conn.execute(
+            "DELETE FROM account_alias_rules WHERE user_id = ? AND ref_key = ?",
+            (user_id, ref_key),
+        )
+        conn.commit()
+        return int(cursor.rowcount or 0)
+    finally:
+        conn.close()
+
+
+def upsert_retrieval_run(
+    job_id,
+    user_id,
+    status,
+    last_message="",
+    row_count=0,
+    created_at=None,
+    ended_at=None,
+    payload=None,
+):
+    now = datetime.now(timezone.utc).isoformat()
+    created = created_at or now
+    payload_json = json.dumps(payload or {})
+
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO retrieval_runs (job_id, user_id, status, last_message, row_count, created_at, ended_at, payload_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(job_id)
+            DO UPDATE SET
+                user_id=excluded.user_id,
+                status=excluded.status,
+                last_message=excluded.last_message,
+                row_count=excluded.row_count,
+                created_at=excluded.created_at,
+                ended_at=excluded.ended_at,
+                payload_json=excluded.payload_json
+            """,
+            (job_id, user_id, status, last_message, int(row_count or 0), created, ended_at, payload_json),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def save_generated_file(job_id, user_id, file_key, file_name, mime_type, file_blob, created_at=None):
+    ts = created_at or datetime.now(timezone.utc).isoformat()
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO generated_files (job_id, user_id, file_key, file_name, mime_type, file_blob, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(job_id, user_id, file_key)
+            DO UPDATE SET
+                file_name=excluded.file_name,
+                mime_type=excluded.mime_type,
+                file_blob=excluded.file_blob,
+                created_at=excluded.created_at
+            """,
+            (job_id, user_id, file_key, file_name, mime_type, file_blob, ts),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_recent_retrieval_runs_for_user(user_id, limit=200):
+    conn = _connect()
+    try:
+        run_rows = conn.execute(
+            """
+            SELECT job_id, user_id, status, last_message, row_count, created_at, ended_at, payload_json
+            FROM retrieval_runs
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        ).fetchall()
+        file_rows = conn.execute(
+            """
+            SELECT job_id, file_key, file_name, created_at
+            FROM generated_files
+            WHERE user_id = ?
+            ORDER BY id DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    files_by_job = {}
+    for row in file_rows:
+        files_by_job.setdefault(row["job_id"], {})[row["file_key"]] = {
+            "name": row["file_name"],
+            "created_at": row["created_at"],
+        }
+
+    runs = []
+    for row in run_rows:
+        payload_raw = row["payload_json"] or "{}"
+        try:
+            payload = json.loads(payload_raw)
+        except json.JSONDecodeError:
+            payload = {}
+        runs.append(
+            {
+                "id": row["job_id"],
+                "owner": row["user_id"],
+                "status": row["status"],
+                "last_message": row["last_message"] or "",
+                "created_at": row["created_at"] or "",
+                "ended_at": row["ended_at"],
+                "payload": payload,
+                "result": {
+                    "row_count": int(row["row_count"] or 0),
+                    "files": files_by_job.get(row["job_id"], {}),
+                },
+            }
+        )
+    return runs
+
+
+def get_retrieval_run_for_user(user_id, job_id):
+    runs = list_recent_retrieval_runs_for_user(user_id, limit=500)
+    for run in runs:
+        if run.get("id") == job_id:
+            return run
+    return None
+
+
+def get_generated_file(user_id, job_id, file_key):
+    conn = _connect()
+    try:
+        row = conn.execute(
+            """
+            SELECT id, job_id, user_id, file_key, file_name, mime_type, file_blob, created_at
+            FROM generated_files
+            WHERE user_id = ? AND job_id = ? AND file_key = ?
+            """,
+            (user_id, job_id, file_key),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "job_id": row["job_id"],
+        "user_id": row["user_id"],
+        "file_key": row["file_key"],
+        "file_name": row["file_name"],
+        "mime_type": row["mime_type"],
+        "file_blob": row["file_blob"],
+        "created_at": row["created_at"],
+    }
+
+
+def delete_expired_generated_files(retention_hours):
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, int(retention_hours or 24)))).isoformat()
+
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM generated_files WHERE created_at < ?", (cutoff,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_expired_retrieval_runs(retention_days):
+    """Hard delete retrieval runs older than retention_days."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, int(retention_days or 60)))).isoformat()
+
+    conn = _connect()
+    try:
+        # First, get all job IDs that are older than cutoff
+        old_runs = conn.execute(
+            "SELECT job_id FROM retrieval_runs WHERE created_at < ?",
+            (cutoff,),
+        ).fetchall()
+        
+        # Delete files for these old runs
+        for run in old_runs:
+            job_id = run["job_id"]
+            conn.execute("DELETE FROM generated_files WHERE job_id = ?", (job_id,))
+        
+        # Then delete the runs themselves
+        conn.execute("DELETE FROM retrieval_runs WHERE created_at < ?", (cutoff,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_generated_files_for_job(user_id, job_id):
+    conn = _connect()
+    try:
+        cursor = conn.execute(
+            "DELETE FROM generated_files WHERE user_id = ? AND job_id = ?",
+            (user_id, job_id),
+        )
+        conn.commit()
+        return int(cursor.rowcount or 0)
+    finally:
+        conn.close()
+
+
+def delete_retrieval_run(user_id, job_id):
+    """Hard delete a retrieval run record."""
+    conn = _connect()
+    try:
+        conn.execute(
+            "DELETE FROM retrieval_runs WHERE user_id = ? AND job_id = ?",
+            (user_id, job_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def save_portal_credentials(user_id, portal_username, portal_password):
+    encrypted = _FERNET.encrypt(portal_password.encode("utf-8")).decode("utf-8")
+    now = datetime.utcnow().isoformat()
+
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO portal_credentials (user_id, portal_username, portal_password_encrypted, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id)
+            DO UPDATE SET
+                portal_username=excluded.portal_username,
+                portal_password_encrypted=excluded.portal_password_encrypted,
+                updated_at=excluded.updated_at
+            """,
+            (user_id, portal_username, encrypted, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_portal_credentials(user_id):
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT portal_username, portal_password_encrypted, updated_at FROM portal_credentials WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+
+    password = _FERNET.decrypt(row["portal_password_encrypted"].encode("utf-8")).decode("utf-8")
+    return {
+        "portal_username": row["portal_username"],
+        "portal_password": password,
+        "updated_at": row["updated_at"],
+    }
+
+
+def delete_portal_credentials(user_id):
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM portal_credentials WHERE user_id = ?", (user_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def ensure_app_user(
+    user_id,
+    password_hash,
+    role="user",
+    is_active=True,
+    must_change_password=False,
+    password_changed_at=None,
+    email=None,
+):
+    if not user_id or not password_hash:
+        return
+
+    now = datetime.now(timezone.utc).isoformat()
+    changed_at = password_changed_at or now
+    normalized_role = role if role in {"admin", "user"} else "user"
+    active_value = 1 if is_active else 0
+    must_change_value = 1 if must_change_password else 0
+    normalized_email = (email or "").strip().lower() or None
+
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO app_users (user_id, password_hash, role, is_active, failed_attempts, locked_until, must_change_password, password_changed_at, email, updated_at)
+            VALUES (?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)
+            ON CONFLICT(user_id)
+            DO UPDATE SET
+                password_hash=excluded.password_hash,
+                role=excluded.role,
+                is_active=excluded.is_active,
+                must_change_password=excluded.must_change_password,
+                password_changed_at=excluded.password_changed_at,
+                email=excluded.email,
+                updated_at=excluded.updated_at
+            """,
+            (user_id, password_hash, normalized_role, active_value, must_change_value, changed_at, normalized_email, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_app_user_by_email(email):
+    normalized_email = (email or "").strip().lower()
+    if not normalized_email:
+        return None
+
+    conn = _connect()
+    try:
+        row = conn.execute(
+            """
+            SELECT user_id, password_hash, role, is_active, failed_attempts, locked_until, must_change_password, password_changed_at, email, updated_at
+            FROM app_users
+            WHERE lower(coalesce(email, '')) = ?
+            """,
+            (normalized_email,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    return dict(row) if row else None
+
+
+def get_app_user(user_id):
+    conn = _connect()
+    try:
+        row = conn.execute(
+            """
+            SELECT user_id, password_hash, role, is_active, failed_attempts, locked_until, must_change_password, password_changed_at, email, updated_at
+            FROM app_users
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+
+    return dict(row)
+
+
+def register_failed_login(user_id, max_attempts, lock_minutes):
+    user = get_app_user(user_id)
+    if not user:
+        return None
+
+    failed_attempts = int(user.get("failed_attempts") or 0) + 1
+    locked_until = None
+    if failed_attempts >= max_attempts:
+        locked_until = (datetime.now(timezone.utc) + timedelta(minutes=lock_minutes)).isoformat()
+        failed_attempts = 0
+
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            UPDATE app_users
+            SET failed_attempts = ?, locked_until = ?, updated_at = ?
+            WHERE user_id = ?
+            """,
+            (failed_attempts, locked_until, datetime.now(timezone.utc).isoformat(), user_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return get_app_user(user_id)
+
+
+def clear_failed_login(user_id):
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            UPDATE app_users
+            SET failed_attempts = 0, locked_until = NULL, updated_at = ?
+            WHERE user_id = ?
+            """,
+            (datetime.now(timezone.utc).isoformat(), user_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_app_users():
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT user_id, role, is_active, failed_attempts, locked_until, must_change_password, password_changed_at, email, updated_at
+            FROM app_users
+            ORDER BY user_id ASC
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [dict(row) for row in rows]
+
+
+def set_user_password(user_id, password_hash, must_change_password=False):
+    changed_at = datetime.now(timezone.utc).isoformat()
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            UPDATE app_users
+            SET password_hash = ?, failed_attempts = 0, locked_until = NULL, must_change_password = ?, password_changed_at = ?, updated_at = ?
+            WHERE user_id = ?
+            """,
+            (password_hash, 1 if must_change_password else 0, changed_at, changed_at, user_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_user_active(user_id, is_active):
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            UPDATE app_users
+            SET is_active = ?, updated_at = ?
+            WHERE user_id = ?
+            """,
+            (1 if is_active else 0, datetime.now(timezone.utc).isoformat(), user_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_user_role(user_id, role):
+    normalized_role = role if role in {"admin", "user"} else "user"
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            UPDATE app_users
+            SET role = ?, updated_at = ?
+            WHERE user_id = ?
+            """,
+            (normalized_role, datetime.now(timezone.utc).isoformat(), user_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_user_email(user_id, email):
+    normalized_email = (email or "").strip().lower() or None
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            UPDATE app_users
+            SET email = ?, updated_at = ?
+            WHERE user_id = ?
+            """,
+            (normalized_email, datetime.now(timezone.utc).isoformat(), user_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_app_user(user_id):
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM generated_files WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM retrieval_runs WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM portal_credentials WHERE user_id = ?", (user_id,))
+        cursor = conn.execute("DELETE FROM app_users WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return int(cursor.rowcount or 0)
+    finally:
+        conn.close()
+
+
+def log_auth_event(user_id, event_type, outcome, source_ip=None, details=None):
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO auth_audit_log (event_time, user_id, event_type, outcome, source_ip, details)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.now(timezone.utc).isoformat(),
+                user_id,
+                event_type,
+                outcome,
+                source_ip,
+                details,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_recent_auth_events(limit=200):
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, event_time, user_id, event_type, outcome, source_ip, details
+            FROM auth_audit_log
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [dict(row) for row in rows]
+
+
+def get_recent_auth_events_for_user(user_id, limit=200):
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, event_time, user_id, event_type, outcome, source_ip, details
+            FROM auth_audit_log
+            WHERE user_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [dict(row) for row in rows]

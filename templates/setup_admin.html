@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Setup Admin</title>
+  <style>
+    :root {
+      --bg: #eef3f7;
+      --card: #ffffff;
+      --text: #223042;
+      --accent: #0a5c6b;
+      --accent-2: #198f8f;
+      --border: #d6dfe7;
+      --error-bg: #fff1f1;
+      --error-text: #8c1c1c;
+      --ok-bg: #ecfcf5;
+      --ok-text: #18634e;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: var(--bg);
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      color: var(--text);
+      padding: 20px;
+    }
+
+    .card {
+      width: min(460px, 100%);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: 0 14px 32px rgba(20, 52, 80, 0.08);
+      padding: 20px;
+    }
+
+    h1 {
+      margin-top: 0;
+      color: var(--accent);
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+
+    label {
+      font-size: 0.9rem;
+      opacity: 0.9;
+    }
+
+    input[type="password"] {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 0.95rem;
+    }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 16px;
+      color: #fff;
+      background: linear-gradient(120deg, var(--accent), var(--accent-2));
+      font-weight: 700;
+      cursor: pointer;
+      width: 100%;
+    }
+
+    .flash {
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+      border: 1px solid var(--border);
+      font-size: 0.9rem;
+    }
+
+    .flash.error {
+      background: var(--error-bg);
+      color: var(--error-text);
+      border-color: #e8b2b2;
+    }
+
+    .flash.success {
+      background: var(--ok-bg);
+      color: var(--ok-text);
+      border-color: #9dd8c2;
+    }
+
+    .hint {
+      font-size: 0.9rem;
+      margin-bottom: 12px;
+    }
+
+    .link {
+      margin-top: 12px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Setup Admin Login</h1>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="flash {{ category }}">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <p class="hint">Set a local test password for admin user <strong>{{ admin_user }}</strong>.</p>
+
+    <form method="post" action="/setup-admin">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+      <div class="field">
+        <label>New Password</label>
+        <input type="password" name="password" required>
+      </div>
+
+      <div class="field">
+        <label>Confirm Password</label>
+        <input type="password" name="confirm_password" required>
+      </div>
+
+      <button type="submit">Save Admin Password</button>
+    </form>
+
+    <div class="link">
+      <a href="/login">Back to login</a>
+    </div>
+  </main>
+</body>
+</html>

@@ -1,0 +1,98 @@
+.wrap {
+  width: min(980px, 92%);
+}
+
+.profile-hero {
+  border-radius: 16px;
+  border: 1px solid #123a69;
+  padding: 26px 22px;
+  background: linear-gradient(130deg, #02224a, #0f3f71);
+  color: #eef4fb;
+}
+
+.profile-hero p {
+  margin: 0;
+  color: #d8e5f4;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+label {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+input[type="password"] {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 0.95rem;
+  background: #fff;
+}
+
+.actions-row {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.note {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.close-account-card {
+  border-color: #e8c8c8;
+  background: #fff9f9;
+}
+
+.danger-btn {
+  border: 1px solid #8f1a1a;
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: #8f1a1a;
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+dialog {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  width: min(520px, 92vw);
+  padding: 0;
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.22);
+}
+
+dialog::backdrop {
+  background: rgba(16, 28, 43, 0.34);
+}
+
+.close-dialog-body {
+  padding: 16px;
+  display: grid;
+  gap: 10px;
+}
+
+.confirm-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+@media (max-width: 800px) {
+  .grid { grid-template-columns: 1fr; }
+}

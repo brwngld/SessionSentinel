@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Profile | SessionSentinel</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/shared.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/profile.css') }}">
+</head>
+<body>
+  <div class="wrap">
+    {% include "_nav.html" %}
+
+    <section class="profile-hero card">
+      <h1>Profile</h1>
+      <p>Manage your account security settings from this page.</p>
+    </section>
+
+    <section class="card">
+      <h2>Change Password</h2>
+      {% if password_policy and password_policy.expired %}
+      <p class="note">Your password has expired. Update it now to continue using the app.</p>
+      {% elif password_policy and password_policy.days_remaining and password_policy.days_remaining <= 7 %}
+      <p class="note">Your password expires in about {{ password_policy.days_remaining }} day(s).</p>
+      {% endif %}
+      <p class="note">After a successful password update, you will be logged out and asked to sign in again.</p>
+      <form method="post" action="{{ url_for('change_password') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="return_to" value="profile">
+        <div class="grid">
+          <div class="field">
+            <label>Current Password</label>
+            <input name="current_password" type="password" required>
+          </div>
+          <div class="field">
+            <label>New Password</label>
+            <input name="new_password" type="password" minlength="8" required>
+          </div>
+          <div class="field">
+            <label>Confirm New Password</label>
+            <input name="confirm_password" type="password" minlength="8" required>
+          </div>
+        </div>
+        <div class="actions-row">
+          <button type="submit">Update Password</button>
+          <a href="{{ url_for('index') }}" class="profile-link">
+            <span class="profile-name">Back to Dashboard</span>
+          </a>
+        </div>
+      </form>
+    </section>
+
+    <section class="card close-account-card">
+      <h2>Close Account</h2>
+      <p class="note">This permanently removes your account and related saved data from the system.</p>
+      <button type="button" class="danger-btn" id="open-close-account">Close My Account</button>
+    </section>
+
+    <dialog id="close-account-dialog">
+      <form method="post" action="{{ url_for('close_account') }}" class="close-dialog-body" id="close-account-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <h3>Confirm Account Closure</h3>
+        <p class="note">Type CLOSE and enter your current password to continue.</p>
+
+        <div class="field">
+          <label>Current Password</label>
+          <input name="current_password" type="password" required>
+        </div>
+        <div class="field">
+          <label>Confirmation Text</label>
+          <input name="confirmation" type="text" placeholder="CLOSE" required>
+        </div>
+
+        <label class="confirm-row">
+          <input type="checkbox" id="close-confirm-check" required>
+          I understand this action is permanent.
+        </label>
+
+        <div class="actions-row">
+          <button type="button" id="cancel-close-account">Cancel</button>
+          <button type="submit" class="danger-btn">Delete My Account</button>
+        </div>
+      </form>
+    </dialog>
+
+    {% include "_footer.html" %}
+  </div>
+
+  <script>
+    (function () {
+      var openButton = document.getElementById('open-close-account');
+      var dialog = document.getElementById('close-account-dialog');
+      var cancelButton = document.getElementById('cancel-close-account');
+      var form = document.getElementById('close-account-form');
+      var confirmCheck = document.getElementById('close-confirm-check');
+
+      if (!openButton || !dialog || !cancelButton || !form || !confirmCheck) {
+        return;
+      }
+
+      openButton.addEventListener('click', function () {
+        confirmCheck.checked = false;
+        dialog.showModal();
+      });
+
+      cancelButton.addEventListener('click', function () {
+        dialog.close();
+      });
+
+      form.addEventListener('submit', function (event) {
+        if (!confirmCheck.checked) {
+          event.preventDefault();
+          return;
+        }
+        var ok = window.confirm('Are you really sure you want to close your account?');
+        if (!ok) {
+          event.preventDefault();
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SessionSentinel Login</title>
+  <style>
+    :root {
+      --bg: #eef3f7;
+      --card: #ffffff;
+      --text: #223042;
+      --accent: #0a5c6b;
+      --accent-2: #198f8f;
+      --border: #d6dfe7;
+      --error-bg: #fff1f1;
+      --error-text: #8c1c1c;
+      --ok-bg: #ecfcf5;
+      --ok-text: #18634e;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 20% 10%, #ffffff 0, transparent 30%),
+        radial-gradient(circle at 80% 90%, #dff6f1 0, transparent 25%),
+        var(--bg);
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      color: var(--text);
+      padding: 20px;
+    }
+
+    .card {
+      width: min(420px, 100%);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: 0 14px 32px rgba(20, 52, 80, 0.08);
+      padding: 20px;
+    }
+
+    h1 {
+      margin-top: 0;
+      color: var(--accent);
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+
+    label {
+      font-size: 0.9rem;
+      opacity: 0.9;
+    }
+
+    input[type="text"],
+    input[type="password"] {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 0.95rem;
+    }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 16px;
+      color: #fff;
+      background: linear-gradient(120deg, var(--accent), var(--accent-2));
+      font-weight: 700;
+      cursor: pointer;
+      width: 100%;
+    }
+
+    .flash {
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+      border: 1px solid var(--border);
+      font-size: 0.9rem;
+    }
+
+    .flash.error {
+      background: var(--error-bg);
+      color: var(--error-text);
+      border-color: #e8b2b2;
+    }
+
+    .flash.success {
+      background: var(--ok-bg);
+      color: var(--ok-text);
+      border-color: #9dd8c2;
+    }
+
+    .remember {
+      margin-bottom: 12px;
+      font-size: 0.9rem;
+    }
+
+    .link {
+      margin-top: 12px;
+      text-align: center;
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Sign In</h1>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="flash {{ category }}">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <form method="post" action="/login">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+      <div class="field">
+        <label>App Username</label>
+        <input type="text" name="app_username" required>
+      </div>
+
+      <div class="field">
+        <label>App Password</label>
+        <input type="password" name="app_password" required>
+      </div>
+
+      <label class="remember">
+        <input type="checkbox" name="remember_me">
+        Remember me
+      </label>
+
+      <button type="submit">Login</button>
+    </form>
+
+    {% if allow_dev_setup %}
+      <div class="link">
+        <a href="/setup-admin">Can't log in? Setup admin password</a>
+      </div>
+    {% endif %}
+  </main>
+</body>
+</html>

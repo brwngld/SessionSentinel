@@ -1,0 +1,244 @@
+:root {
+  --bg: #f4f6f8;
+  --card: #ffffff;
+  --text: #1c2a39;
+  --muted: #607080;
+  --accent: #042a57;
+  --accent-2: #c89a52;
+  --surface-dark: #02224a;
+  --danger: #b00020;
+  --success: #2a9d8f;
+  --border: #d9e1e6;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 10% 10%, #ffffff 0%, transparent 35%),
+    radial-gradient(circle at 90% 0%, #edf2f9 0%, transparent 30%),
+    var(--bg);
+  min-height: 100vh;
+}
+
+.wrap {
+  width: min(1400px, 96%);
+  margin: 12px auto 36px;
+  display: grid;
+  gap: 16px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 10px 30px rgba(7, 38, 61, 0.06);
+  padding: 18px;
+}
+
+h1, h2 {
+  margin-top: 0;
+  color: var(--accent);
+}
+
+.nav-shell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  padding: 10px 14px;
+}
+
+.brand {
+  display: inline-grid;
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: var(--accent);
+  line-height: 1;
+  text-decoration: none;
+}
+
+.brand span {
+  display: block;
+  color: var(--accent-2);
+}
+
+.nav-links {
+  display: flex;
+  gap: 8px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.nav-links a {
+  text-decoration: none;
+  color: var(--accent);
+  font-weight: 600;
+  padding: 5px 7px;
+  border-radius: 8px;
+  font-size: 0.92rem;
+}
+
+.nav-links a:hover {
+  background: #eef3fb;
+}
+
+.actions {
+  margin-top: 0;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: nowrap;
+}
+
+.inline-form {
+  display: inline;
+  margin: 0;
+}
+
+.profile-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  padding: 4px 8px;
+  border-radius: 10px;
+  color: var(--text);
+  border: 1px solid transparent;
+}
+
+.profile-link:hover {
+  border-color: var(--border);
+  background: #f4f8fe;
+}
+
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.role-badge-role {
+  background: #edf7f8;
+  border-color: #cbe6e3;
+  color: #0e4b43;
+}
+
+.role-badge-user {
+  background: #eef3fb;
+  border-color: #d4deef;
+  color: #14365f;
+  text-transform: none;
+}
+
+.role-badge-icon-only {
+  padding: 4px;
+  width: 28px;
+  height: 28px;
+  justify-content: center;
+}
+
+.role-badge-admin {
+  background: #edf7f8;
+  border-color: #cbe6e3;
+  color: #0e4b43;
+}
+
+.role-badge-member {
+  background: #eef3fb;
+  border-color: #d4deef;
+  color: #14365f;
+}
+
+.role-badge-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 0.75rem;
+  line-height: 1;
+}
+
+button {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 16px;
+  color: #fff;
+  background: linear-gradient(120deg, var(--accent), #17467d);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.flash {
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+}
+
+.flash.success {
+  background: #ecfdf8;
+  border-color: #88d7c8;
+  color: #186457;
+}
+
+.flash.error {
+  background: #fff4f4;
+  border-color: #e8a2a2;
+  color: #8f1a1a;
+}
+
+.animated-card {
+  animation: rise-in 360ms ease-out both;
+}
+
+.delay-1 { animation-delay: 50ms; }
+.delay-2 { animation-delay: 110ms; }
+.delay-3 { animation-delay: 170ms; }
+
+.app-footer {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.88rem;
+  padding: 4px 8px;
+}
+
+@keyframes rise-in {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@media (max-width: 800px) {
+  .nav-shell {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    white-space: normal;
+    overflow-x: visible;
+  }
+
+  .nav-links,
+  .actions {
+    flex-wrap: wrap;
+  }
+}

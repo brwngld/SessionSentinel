@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SessionSentinel Web</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/shared.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/index.css') }}">
+</head>
+<body>
+  <div class="wrap">
+    {% include "_nav.html" %}
+
+    <section class="hero">
+      <div class="hero-pill">official • secure • fast</div>
+      <h1>Retrieve <span class="accent">Customs Data</span><br>and Track Runs in Seconds.</h1>
+      <p>Automate data retrieval from your customs account by date range and review generated files per run.</p>
+      <div class="hero-search">
+        <input id="job-search" type="text" placeholder="Search by run id, label, status, or output path">
+        <button type="button" id="focus-jobs">Search</button>
+      </div>
+      <div class="chip-row">
+        <button type="button" class="chip active" data-job-filter="all">All Runs</button>
+        <button type="button" class="chip" data-job-filter="queued">Queued</button>
+        <button type="button" class="chip" data-job-filter="running">Running</button>
+        <button type="button" class="chip" data-job-filter="stopped">Stopped</button>
+        <button type="button" class="chip" data-job-filter="failed">Failed</button>
+      </div>
+    </section>
+
+    <section class="card section-anchor animated-card delay-1" id="saved-searches">
+      <div class="topbar">
+        <h2>Saved Searches</h2>
+      </div>
+      <div class="card-note">Quick rerun ideas from your latest jobs</div>
+      <div class="saved-carousel" id="saved-carousel">
+        {% if jobs %}
+          <div class="saved-track-viewport">
+            <div class="saved-track" id="saved-track">
+              {% for job in jobs[:4] %}
+              <article class="saved-card saved-slide">
+                <div class="saved-head">
+                  <span>{{ job.id }}</span>
+                  <span class="status {{ job.status }}">{{ job.status }}</span>
+                </div>
+                <div class="saved-body">
+                  <div class="saved-label">{{ (job.payload.start_date or 'Any') }} - {{ (job.payload.end_date or 'Any') }}</div>
+                  <div class="saved-meta">Page size: {{ job.payload.page_size or '-' }}</div>
+                  <div class="saved-meta">Output: {{ job.payload.output_dir or '-' }}</div>
+                </div>
+                <div class="saved-action">Use these values in “Run Data Retrieval” below</div>
+              </article>
+              {% endfor %}
+            </div>
+          </div>
+          <div class="saved-carousel-controls">
+            <button type="button" class="saved-carousel-arrow" data-carousel-prev aria-label="Previous saved search">&#8249;</button>
+            <div class="saved-dots" id="saved-dots" aria-label="Saved search navigation"></div>
+            <div class="saved-position" id="saved-position" aria-live="polite">1 / {{ [jobs|length, 4]|min }}</div>
+            <button type="button" class="saved-carousel-arrow" data-carousel-next aria-label="Next saved search">&#8250;</button>
+          </div>
+        {% else %}
+          <div class="empty-state">No runs yet. Start your first export to populate saved searches.</div>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="card animated-card delay-1">
+      <div class="cta-center">
+        <h2>Need another customs retrieval run?</h2>
+        <p>Use your saved portal credentials, choose a date range, and generate downloadable files in one run.</p>
+        <a href="#run-export"><button type="button">Start New Retrieval</button></a>
+      </div>
+    </section>
+
+    <section class="card section-anchor animated-card delay-2" id="account">
+      <h2>Portal Credentials</h2>
+      <p>
+        {% if has_portal_credentials %}
+          Saved for username <strong>{{ portal_username }}</strong>.
+        {% else %}
+          No saved portal credentials yet.
+        {% endif %}
+      </p>
+      <form method="post" action="/credentials/save">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="grid">
+          <div class="field">
+            <label>Portal Username</label>
+            <input name="portal_username" type="text" value="{{ portal_username }}" required>
+          </div>
+          <div class="field">
+            <label>Portal Password</label>
+            <input name="portal_password" type="password" placeholder="Enter portal password" required>
+          </div>
+        </div>
+        <div class="credential-actions">
+          <button type="submit">Save Credentials</button>
+          {% if has_portal_credentials %}
+          <button type="submit" form="delete-creds-form">Delete Saved Credentials</button>
+          {% endif %}
+        </div>
+      </form>
+
+      {% if has_portal_credentials %}
+      <form id="delete-creds-form" class="inline-form" method="post" action="/credentials/delete">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      </form>
+      {% endif %}
+    </section>
+
+    <section class="card section-anchor animated-card delay-2" id="run-export">
+      <h2>Run Data Retrieval</h2>
+      <form method="post" action="/run">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="grid">
+          <div class="field">
+            <label>Start Date</label>
+            <input class="js-date-input" name="start_date" type="text" value="{{ defaults.start_date }}" placeholder="dd/mm/yy" required>
+          </div>
+          <div class="field">
+            <label>End Date</label>
+            <input class="js-date-input" name="end_date" type="text" value="{{ defaults.end_date }}" placeholder="dd/mm/yy" required>
+          </div>
+          <div class="field">
+            <label>Page Size</label>
+            <input name="page_size" type="number" value="{{ defaults.page_size }}" min="10" required>
+          </div>
+          <div class="field">
+            <label>Report Label</label>
+            <input name="label" type="text" value="{{ defaults.label }}">
+          </div>
+          <div class="field">
+            <label>Output Directory</label>
+            <input name="output_dir" type="text" value="{{ defaults.output_dir }}">
+          </div>
+          <div class="field">
+            <label>Edge Driver Path</label>
+            <input name="edge_driver_path" type="text" value="{{ defaults.edge_driver_path }}">
+          </div>
+        </div>
+
+        <div class="actions">
+          {% if is_admin %}
+          <label>
+            <input name="show_browser" type="checkbox" checked>
+            Show browser window (admin debug)
+          </label>
+          {% else %}
+          <span class="run-mode-note">Runs execute in background mode for standard users.</span>
+          {% endif %}
+          <button type="submit">Start Data Retrieval</button>
+        </div>
+        {% if is_admin %}
+        <div class="run-mode-note">Disable browser visibility only when you intentionally want headless mode.</div>
+        {% endif %}
+      </form>
+    </section>
+
+    <section class="card section-anchor animated-card delay-3" id="activity">
+      <h2>Recent Retrieval Runs</h2>
+      <div class="card-note">Generated files are available for up to 24 hours and then removed automatically.</div>
+      <div class="card-note">Storage: Database-backed files (Open or Download directly from this dashboard).</div>
+      <div class="refresh-note" id="jobs-last-updated">Last updated: --</div>
+      <div class="jobs" id="jobs" data-retention-hours="{{ file_retention_hours }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {% if jobs %}
+          {% for job in jobs %}
+            <article class="job" data-job-id="{{ job.id }}" data-job-status="{{ job.status }}">
+              <div><strong>ID:</strong> {{ job.id }}</div>
+              <div class="status {{ job.status }}">{{ job.status }}</div>
+              <div class="job-stop-control">
+                {% if job.status in ['queued', 'running'] %}
+                <form class="inline-form stop-run-form" method="post" action="/run/{{ job.id }}/stop">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button class="stop-run-btn" type="submit">Stop Run</button>
+                </form>
+                {% elif job.status == 'stopping' %}
+                <span class="stop-run-pending">Stopping...</span>
+                {% elif job.status in ['failed', 'stopped'] %}
+                <form class="inline-form retry-run-form" method="post" action="/run/{{ job.id }}/retry">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button class="retry-run-btn" type="submit">Retry Run</button>
+                </form>
+                {% endif %}
+              </div>
+              <div><strong>Run mode:</strong> <span class="run-mode {% if job.payload and job.payload.headless %}run-mode-headless{% else %}run-mode-visible{% endif %}">{% if job.payload and job.payload.headless %}Headless{% else %}Visible{% endif %}</span></div>
+              <div><strong>Last update:</strong> <span class="message">{{ job.last_message or 'No status message available yet' }}</span></div>
+              <div class="job-result">
+                <div class="delete-files-control" data-job-id="{{ job.id }}" data-csrf="{{ csrf_token }}"></div>
+              </div>
+            </article>
+          {% endfor %}
+        {% else %}
+          <div class="empty-state">No jobs yet. Start a run and your jobs will appear here.</div>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="card animated-card delay-3">
+      <h2>Recent Logs (Your Account)</h2>
+      <div class="refresh-note" id="logs-last-updated">Last updated: --</div>
+      <div class="log-controls">
+        <label>
+          Outcome
+          <select id="log-outcome">
+            <option value="all">All</option>
+            <option value="success">Success</option>
+            <option value="failed">Failed</option>
+            <option value="blocked">Blocked</option>
+          </select>
+        </label>
+        <label>
+          Event
+          <select id="log-event-type">
+            <option value="all">All</option>
+          </select>
+        </label>
+      </div>
+      <div class="log-list" id="log-list">
+        <div class="skeleton-item"><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+        <div class="skeleton-item"><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+        <div class="skeleton-item"><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+      </div>
+    </section>
+
+    {% include "_footer.html" %}
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+  <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>

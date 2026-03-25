@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Audit Logs</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --card: #ffffff;
+      --text: #1c2a39;
+      --accent: #005f73;
+      --border: #d9e1e6;
+      --muted: #607080;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      padding: 24px;
+    }
+
+    .card {
+      max-width: 1200px;
+      margin: 0 auto;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: 0 10px 30px rgba(7, 38, 61, 0.06);
+      padding: 16px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+
+    h1 {
+      margin: 0;
+      color: var(--accent);
+    }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      color: #fff;
+      background: linear-gradient(120deg, var(--accent), #0a9396);
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+
+    th, td {
+      border: 1px solid var(--border);
+      padding: 8px;
+      text-align: left;
+      vertical-align: top;
+      word-break: break-word;
+    }
+
+    th {
+      background: #eef6f8;
+      color: var(--muted);
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    @media (max-width: 900px) {
+      table, thead, tbody, th, td, tr { display: block; }
+      thead tr { display: none; }
+      tr { margin-bottom: 10px; border: 1px solid var(--border); }
+      td { border: none; border-bottom: 1px solid var(--border); }
+      td:last-child { border-bottom: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="topbar">
+      <h1>Authentication Audit Log</h1>
+      <div>
+        <a href="{{ url_for('admin_session_log') }}"><button type="button">Open Session Log</button></a>
+        <a href="/"><button type="button">Back to Dashboard</button></a>
+      </div>
+    </div>
+
+    {% if events %}
+      <table>
+        <thead>
+          <tr>
+            <th>Time (UTC)</th>
+            <th>User</th>
+            <th>Event</th>
+            <th>Outcome</th>
+            <th>Source IP</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for event in events %}
+            <tr>
+              <td>{{ event.event_time }}</td>
+              <td>{{ event.user_id or '-' }}</td>
+              <td>{{ event.event_type }}</td>
+              <td>{{ event.outcome }}</td>
+              <td>{{ event.source_ip or '-' }}</td>
+              <td>{{ event.details or '-' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">No audit events recorded yet.</p>
+    {% endif %}
+  </main>
+</body>
+</html>

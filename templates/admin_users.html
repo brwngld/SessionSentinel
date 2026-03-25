@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>User Management</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --card: #ffffff;
+      --text: #1c2a39;
+      --accent: #005f73;
+      --border: #d9e1e6;
+      --muted: #607080;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      padding: 24px;
+    }
+    .card {
+      max-width: 1200px;
+      margin: 0 auto 16px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 10px 30px rgba(7, 38, 61, 0.06);
+    }
+    h1, h2 { margin-top: 0; color: var(--accent); }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .grid { display: grid; gap: 10px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .grid-4 { display: grid; gap: 10px; grid-template-columns: 2fr 1fr 1fr 1fr; }
+    .field { display: grid; gap: 6px; }
+    label { font-size: 0.9rem; color: var(--muted); }
+    input, select {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+      font-size: 0.95rem;
+    }
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      color: #fff;
+      background: linear-gradient(120deg, var(--accent), #0a9396);
+      font-weight: 600;
+      cursor: pointer;
+    }
+    table { width: 100%; border-collapse: collapse; }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 8px;
+      text-align: left;
+      vertical-align: top;
+      font-size: 0.9rem;
+    }
+    th { background: #eef6f8; color: var(--muted); }
+    .row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .inline { display: inline; }
+    .inline-block { display: inline-block; }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 0.8rem;
+      font-weight: 700;
+      border: 1px solid transparent;
+    }
+    .status-active { background: #e9f8f0; color: #156b4e; border-color: #9ad5bc; }
+    .status-inactive { background: #f1f4f9; color: #3d5068; border-color: #cbd7e5; }
+    .status-locked { background: #fff4e8; color: #7f4f0f; border-color: #f0c58f; }
+    .status-expiring { background: #fff7df; color: #845200; border-color: #f0d392; }
+    .flash {
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+      border: 1px solid var(--border);
+    }
+    .flash.success { background: #ecfdf8; border-color: #88d7c8; color: #186457; }
+    .flash.error { background: #fff4f4; border-color: #e8a2a2; color: #8f1a1a; }
+    .ghost-btn {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 10px;
+      background: #f8fbff;
+      color: #1f3a56;
+      font-size: 0.84rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .danger-btn {
+      border-color: #e8a2a2;
+      background: #fff4f4;
+      color: #8f1a1a;
+    }
+    dialog {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      width: min(520px, 92vw);
+      padding: 0;
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.2);
+    }
+    dialog::backdrop { background: rgba(17, 30, 44, 0.35); }
+    .modal-body { padding: 16px; display: grid; gap: 10px; }
+    .modal-title { margin: 0; color: var(--accent); }
+    .modal-sub { color: var(--muted); font-size: 0.9rem; margin: 0; }
+    .modal-warning {
+      margin: 0;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid #d7e4f2;
+      background: #f4f9ff;
+      color: #18456b;
+      font-size: 0.87rem;
+    }
+    .modal-warning.danger {
+      border-color: #e8a2a2;
+      background: #fff4f4;
+      color: #8f1a1a;
+    }
+    .confirm-check { display: flex; gap: 8px; align-items: center; font-size: 0.88rem; color: var(--muted); }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: 1fr; }
+      .grid-4 { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <section class="card">
+    <div class="topbar">
+      <h1>User Management</h1>
+      <a href="/"><button type="button">Back to Dashboard</button></a>
+    </div>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="flash {{ category }}">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <h2>Create User</h2>
+    <form method="post" action="/admin/users">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="action" value="create">
+      <div class="grid">
+        <div class="field">
+          <label>Username</label>
+          <input type="text" name="new_user" required>
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <input type="password" name="new_password" required>
+        </div>
+        <div class="field">
+          <label>Role</label>
+          <select name="new_role">
+            <option value="user">User</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Email (optional)</label>
+          <input type="email" name="new_email" placeholder="name@company.com">
+        </div>
+      </div>
+      <p><button type="submit">Create User</button></p>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Existing Users</h2>
+    <p>
+      <span class="status-pill status-expiring">Expiring Soon: {{ expiring_soon_count }}</span>
+      <span style="color: var(--muted); margin-left: 6px;">(within {{ warning_days }} days)</span>
+    </p>
+    <form method="get" action="/admin/users" class="grid-4" style="margin-bottom: 12px;">
+      <div class="field">
+        <label>Search user</label>
+        <input type="text" name="q" value="{{ q or '' }}" placeholder="username or email">
+      </div>
+      <div class="field">
+        <label>Role</label>
+        <select name="role">
+          <option value="all" {% if role_filter == 'all' %}selected{% endif %}>all</option>
+          <option value="admin" {% if role_filter == 'admin' %}selected{% endif %}>admin</option>
+          <option value="user" {% if role_filter == 'user' %}selected{% endif %}>user</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Status</label>
+        <select name="status">
+          <option value="all" {% if status_filter == 'all' %}selected{% endif %}>all</option>
+          <option value="active" {% if status_filter == 'active' %}selected{% endif %}>active</option>
+          <option value="inactive" {% if status_filter == 'inactive' %}selected{% endif %}>inactive</option>
+          <option value="locked" {% if status_filter == 'locked' %}selected{% endif %}>locked</option>
+          <option value="expiring_soon" {% if status_filter == 'expiring_soon' %}selected{% endif %}>expiring soon</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Sort</label>
+        <select name="sort">
+          <option value="user_id" {% if sort_by == 'user_id' %}selected{% endif %}>username</option>
+          <option value="email" {% if sort_by == 'email' %}selected{% endif %}>email</option>
+          <option value="role" {% if sort_by == 'role' %}selected{% endif %}>role</option>
+          <option value="is_active" {% if sort_by == 'is_active' %}selected{% endif %}>status</option>
+          <option value="failed_attempts" {% if sort_by == 'failed_attempts' %}selected{% endif %}>failed attempts</option>
+          <option value="locked_until" {% if sort_by == 'locked_until' %}selected{% endif %}>locked until</option>
+          <option value="password_days_remaining" {% if sort_by == 'password_days_remaining' %}selected{% endif %}>password days remaining</option>
+          <option value="updated_at" {% if sort_by == 'updated_at' %}selected{% endif %}>last update</option>
+        </select>
+      </div>
+      <div class="field inline-block">
+        <label>Direction</label>
+        <select name="dir">
+          <option value="asc" {% if sort_dir == 'asc' %}selected{% endif %}>asc</option>
+          <option value="desc" {% if sort_dir == 'desc' %}selected{% endif %}>desc</option>
+        </select>
+      </div>
+      <div class="field inline-block" style="align-self: end;">
+        <button type="submit">Apply Filters</button>
+      </div>
+      <div class="field inline-block" style="align-self: end;">
+        <a href="/admin/users"><button type="button">Reset</button></a>
+      </div>
+    </form>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Username</th>
+          <th>Email</th>
+          <th>Role</th>
+          <th>Status</th>
+          <th>Failed Attempts</th>
+          <th>Locked Until</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for user in users %}
+        <tr>
+          <td>{{ user.user_id }}</td>
+          <td>{{ user.email or '-' }}</td>
+          <td>{{ user.role }}</td>
+          <td>
+            {% if user.locked_until %}
+              <span class="status-pill status-locked">locked</span>
+            {% elif user.is_active %}
+              <span class="status-pill status-active">active</span>
+            {% else %}
+              <span class="status-pill status-inactive">inactive</span>
+            {% endif %}
+          </td>
+          <td>{{ user.failed_attempts }}</td>
+          <td>
+            {% if user.locked_until %}
+              {{ user.locked_until }}
+              {% if user.lock_remaining_minutes and user.lock_remaining_minutes > 0 %}
+                <div>(~{{ user.lock_remaining_minutes }} min remaining)</div>
+              {% endif %}
+            {% else %}
+              -
+            {% endif %}
+          </td>
+          <td>
+            <div class="row-actions">
+              {% if user.must_change_password %}
+              <span class="status-pill status-locked">must change password</span>
+              {% endif %}
+              {% if user.password_expiring_soon %}
+              <span class="status-pill status-expiring">expires in ~{{ user.password_days_remaining }} day(s)</span>
+              {% endif %}
+
+              <button
+                type="button"
+                class="ghost-btn js-user-action"
+                data-user="{{ user.user_id }}"
+                data-action="toggle_active"
+                data-title="{{ 'Deactivate' if user.is_active else 'Activate' }} {{ user.user_id }}"
+                data-subtitle="This will change the active status for this user."
+              >{{ 'Deactivate' if user.is_active else 'Activate' }}</button>
+
+              <button
+                type="button"
+                class="ghost-btn js-user-action"
+                data-user="{{ user.user_id }}"
+                data-action="set_role"
+                data-title="Change Role for {{ user.user_id }}"
+                data-subtitle="Select a new role and confirm."
+                data-role="{{ user.role }}"
+              >Change Role</button>
+
+              <button
+                type="button"
+                class="ghost-btn js-user-action"
+                data-user="{{ user.user_id }}"
+                data-action="set_email"
+                data-title="Update Email for {{ user.user_id }}"
+                data-subtitle="Enter an email address or leave blank to clear it."
+                data-email="{{ user.email or '' }}"
+              >Update Email</button>
+
+              <button
+                type="button"
+                class="ghost-btn js-user-action"
+                data-user="{{ user.user_id }}"
+                data-action="reset_password"
+                data-title="Reset Password for {{ user.user_id }}"
+                data-subtitle="User will be required to change password at next login."
+              >Reset Password</button>
+
+              {% if user.locked_until %}
+              <button
+                type="button"
+                class="ghost-btn js-user-action"
+                data-user="{{ user.user_id }}"
+                data-action="unlock"
+                data-title="Unlock {{ user.user_id }}"
+                data-subtitle="This clears lockout counters for this user."
+              >Unlock</button>
+              {% endif %}
+
+              {% if user.password_expiring_soon and not user.must_change_password %}
+              <button
+                type="button"
+                class="ghost-btn js-user-action"
+                data-user="{{ user.user_id }}"
+                data-action="notify_reminder"
+                data-title="Notify Reminder for {{ user.user_id }}"
+                data-subtitle="Record a reminder action for this user."
+              >Notify Reminder</button>
+              {% if not user.email %}
+              <span class="status-pill status-inactive">no email on file</span>
+              {% endif %}
+              {% endif %}
+
+              <button
+                type="button"
+                class="ghost-btn danger-btn js-user-action"
+                data-user="{{ user.user_id }}"
+                data-action="delete_user"
+                data-title="Delete User {{ user.user_id }}"
+                data-subtitle="This permanently removes the account and related data."
+              >Delete User</button>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <dialog id="action-modal">
+    <form method="post" action="/admin/users" id="action-form" class="modal-body">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="action" id="modal-action" value="">
+      <input type="hidden" name="target_user" id="modal-target-user" value="">
+
+      <h3 class="modal-title" id="modal-title">Confirm Action</h3>
+      <p class="modal-sub" id="modal-subtitle"></p>
+      <p class="modal-warning" id="modal-warning">Please review the details before submitting.</p>
+
+      <div id="modal-reset-password" style="display:none;">
+        <label>New Password</label>
+        <input type="password" name="new_password" id="modal-new-password" minlength="8">
+      </div>
+
+      <div id="modal-set-role" style="display:none;">
+        <label>New Role</label>
+        <select name="new_role" id="modal-new-role">
+          <option value="user">user</option>
+          <option value="admin">admin</option>
+        </select>
+      </div>
+
+      <div id="modal-set-email" style="display:none;">
+        <label>Email</label>
+        <input type="email" name="new_email" id="modal-new-email" placeholder="name@company.com">
+      </div>
+
+      <div id="modal-delete-confirm" style="display:none;">
+        <label>Type DELETE to confirm</label>
+        <input type="text" name="delete_confirmation" id="modal-delete-confirm-input" placeholder="DELETE">
+      </div>
+
+      <label class="confirm-check">
+        <input type="checkbox" id="modal-confirm-check" required>
+        I understand and want to continue.
+      </label>
+
+      <div class="modal-actions">
+        <button type="button" class="ghost-btn" id="modal-cancel">Cancel</button>
+        <button type="submit" id="modal-submit">Submit</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    (function () {
+      var modal = document.getElementById('action-modal');
+      var form = document.getElementById('action-form');
+      var actionInput = document.getElementById('modal-action');
+      var userInput = document.getElementById('modal-target-user');
+      var title = document.getElementById('modal-title');
+      var subtitle = document.getElementById('modal-subtitle');
+      var warning = document.getElementById('modal-warning');
+      var cancel = document.getElementById('modal-cancel');
+      var confirmCheck = document.getElementById('modal-confirm-check');
+      var submit = document.getElementById('modal-submit');
+
+      var resetBlock = document.getElementById('modal-reset-password');
+      var roleBlock = document.getElementById('modal-set-role');
+      var emailBlock = document.getElementById('modal-set-email');
+      var newPassword = document.getElementById('modal-new-password');
+      var newRole = document.getElementById('modal-new-role');
+      var newEmail = document.getElementById('modal-new-email');
+      var deleteConfirmBlock = document.getElementById('modal-delete-confirm');
+      var deleteConfirmInput = document.getElementById('modal-delete-confirm-input');
+
+      var actionMeta = {
+        toggle_active: {
+          warning: 'This changes whether the user can sign in.',
+          confirm: 'Are you sure you want to update active status?',
+          submitText: 'Update Status',
+          danger: false,
+        },
+        set_role: {
+          warning: 'Role changes affect system permissions immediately.',
+          confirm: 'Are you sure you want to change role?',
+          submitText: 'Change Role',
+          danger: false,
+        },
+        set_email: {
+          warning: 'Email is used for reminder eligibility and future notifications.',
+          confirm: 'Are you sure you want to update email?',
+          submitText: 'Update Email',
+          danger: false,
+        },
+        reset_password: {
+          warning: 'User will be forced to change password on next login.',
+          confirm: 'Are you sure you want to reset this password?',
+          submitText: 'Reset Password',
+          danger: true,
+        },
+        unlock: {
+          warning: 'This clears lockout counters and allows another login attempt.',
+          confirm: 'Are you sure you want to unlock this account?',
+          submitText: 'Unlock Account',
+          danger: false,
+        },
+        notify_reminder: {
+          warning: 'This records a reminder event in the audit trail.',
+          confirm: 'Record password reminder event for this user?',
+          submitText: 'Record Reminder',
+          danger: false,
+        },
+        delete_user: {
+          warning: 'This permanently deletes the user and related data.',
+          confirm: 'Are you sure you want to permanently delete this user?',
+          submitText: 'Delete User',
+          danger: true,
+        },
+      };
+
+      function hideAll() {
+        resetBlock.style.display = 'none';
+        roleBlock.style.display = 'none';
+        emailBlock.style.display = 'none';
+        deleteConfirmBlock.style.display = 'none';
+        newPassword.required = false;
+        deleteConfirmInput.required = false;
+      }
+
+      function openFromButton(button) {
+        hideAll();
+        confirmCheck.checked = false;
+        actionInput.value = button.getAttribute('data-action') || '';
+        userInput.value = button.getAttribute('data-user') || '';
+        title.textContent = button.getAttribute('data-title') || 'Confirm Action';
+        subtitle.textContent = button.getAttribute('data-subtitle') || '';
+
+        var meta = actionMeta[actionInput.value] || {};
+        warning.textContent = meta.warning || 'Please review the details before submitting.';
+        warning.classList.toggle('danger', Boolean(meta.danger));
+        submit.textContent = meta.submitText || 'Submit';
+        submit.classList.toggle('danger-btn', Boolean(meta.danger));
+
+        if (actionInput.value === 'reset_password') {
+          resetBlock.style.display = 'block';
+          newPassword.value = '';
+          newPassword.required = true;
+        }
+        if (actionInput.value === 'set_role') {
+          roleBlock.style.display = 'block';
+          newRole.value = button.getAttribute('data-role') || 'user';
+        }
+        if (actionInput.value === 'set_email') {
+          emailBlock.style.display = 'block';
+          newEmail.value = button.getAttribute('data-email') || '';
+        }
+        if (actionInput.value === 'delete_user') {
+          deleteConfirmBlock.style.display = 'block';
+          deleteConfirmInput.value = '';
+          deleteConfirmInput.required = true;
+        }
+
+        modal.showModal();
+      }
+
+      var buttons = document.querySelectorAll('.js-user-action');
+      for (var i = 0; i < buttons.length; i++) {
+        buttons[i].addEventListener('click', function () {
+          openFromButton(this);
+        });
+      }
+
+      cancel.addEventListener('click', function () {
+        modal.close();
+      });
+
+      form.addEventListener('submit', function (event) {
+        if (!confirmCheck.checked) {
+          event.preventDefault();
+          return;
+        }
+        var meta = actionMeta[actionInput.value] || {};
+        var ok = window.confirm(meta.confirm || 'Are you sure you want to proceed with this action?');
+        if (!ok) {
+          event.preventDefault();
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

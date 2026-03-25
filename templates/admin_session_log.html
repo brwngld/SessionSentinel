@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Session Log</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --card: #ffffff;
+      --text: #1c2a39;
+      --accent: #005f73;
+      --border: #d9e1e6;
+      --muted: #607080;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      padding: 24px;
+    }
+
+    .card {
+      max-width: 1200px;
+      margin: 0 auto;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: 0 10px 30px rgba(7, 38, 61, 0.06);
+      padding: 16px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+
+    h1 {
+      margin: 0;
+      color: var(--accent);
+    }
+
+    .controls {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .filter-row {
+      display: grid;
+      grid-template-columns: 1fr 160px auto;
+      gap: 8px;
+      margin: 12px 0;
+      align-items: end;
+    }
+
+    .field {
+      display: grid;
+      gap: 4px;
+    }
+
+    .field label {
+      font-size: 0.86rem;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    input[type="text"],
+    input[type="number"] {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font: inherit;
+      width: 100%;
+    }
+
+    .filter-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .btn-secondary {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 10px;
+      padding: 10px 14px;
+      text-decoration: none;
+      color: #0f2b45;
+      background: #e6eef7;
+      font-weight: 600;
+    }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      color: #fff;
+      background: linear-gradient(120deg, var(--accent), #0a9396);
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .meta {
+      margin: 10px 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .match-nav {
+      margin: 6px 0 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .quick-filters {
+      margin: 8px 0;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .quick-filters-label {
+      color: var(--muted);
+      font-size: 0.88rem;
+      font-weight: 700;
+    }
+
+    .quick-filter {
+      border: 1px solid #b8c9db;
+      border-radius: 999px;
+      background: #f0f6ff;
+      color: #113a5c;
+      padding: 6px 10px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .quick-filter:hover {
+      background: #e4eefc;
+    }
+
+    .match-nav button {
+      padding: 8px 12px;
+      border-radius: 8px;
+    }
+
+    .match-count {
+      color: var(--muted);
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+
+    pre {
+      margin: 0;
+      background: #0f1b28;
+      color: #f0f6ff;
+      padding: 14px;
+      border-radius: 10px;
+      border: 1px solid #203247;
+      max-height: 70vh;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.4;
+      font-size: 0.9rem;
+    }
+
+    mark {
+      background: #ffd166;
+      color: #1f2328;
+      border-radius: 3px;
+      padding: 0 2px;
+    }
+
+    mark.current-match {
+      background: #ff9f1c;
+      color: #111;
+      outline: 1px solid #cc7b00;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    @media (max-width: 850px) {
+      .filter-row {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="topbar">
+      <h1>Session Log</h1>
+      <div class="controls">
+        <a href="{{ url_for('admin_session_log_download') }}"><button type="button">Download Full Log</button></a>
+        <a href="{{ url_for('admin_audit') }}"><button type="button">Back to Audit</button></a>
+        <a href="/"><button type="button">Back to Dashboard</button></a>
+      </div>
+    </div>
+
+    {% if log_exists %}
+      <form method="get" class="filter-row" id="log-filter-form">
+        <div class="field">
+          <label for="q">Filter text (optional)</label>
+          <input id="q" type="text" name="q" value="{{ query }}" placeholder="e.g. login failed, job_id, traceback">
+        </div>
+        <div class="field">
+          <label for="lines">Show latest lines</label>
+          <input id="lines" type="number" name="lines" min="1" max="20000" value="{{ lines_limit }}">
+        </div>
+        <div class="filter-actions">
+          <button type="submit">Apply</button>
+          <a href="{{ url_for('admin_session_log') }}" class="btn-secondary">Reset</a>
+        </div>
+      </form>
+
+      <div class="quick-filters">
+        <span class="quick-filters-label">Quick filters:</span>
+        <button type="button" class="quick-filter" data-quick-filter="ERROR">Errors</button>
+        <button type="button" class="quick-filter" data-quick-filter="Traceback">Tracebacks</button>
+        <button type="button" class="quick-filter" data-quick-filter="failed">Failed</button>
+        <button type="button" class="quick-filter" data-quick-filter="Exception">Exceptions</button>
+        <button type="button" class="quick-filter" data-quick-filter="">Clear Filter</button>
+      </div>
+
+      <div class="meta">
+        Showing {{ shown_line_count }} line(s)
+        {% if total_line_count != shown_line_count %}
+          of {{ total_line_count }} total
+        {% endif %}
+        | Size: {{ file_size }} bytes
+        {% if query %}
+          | Filter: "{{ query }}"
+        {% endif %}
+      </div>
+      <div class="match-nav" id="match-nav" hidden>
+        <button type="button" id="prev-match">Previous</button>
+        <button type="button" id="next-match">Next</button>
+        <span class="match-count" id="match-count"></span>
+      </div>
+      <pre id="session-log-content" data-query="{{ query }}">{{ log_content }}</pre>
+    {% else %}
+      <p class="muted">No session.log file found yet.</p>
+    {% endif %}
+  </main>
+  <script>
+    (function () {
+      var query = "";
+      var pre = document.getElementById("session-log-content");
+      if (pre) {
+        query = pre.dataset.query || "";
+      }
+      if (!query) {
+        return;
+      }
+
+      if (!pre || !pre.textContent) {
+        return;
+      }
+
+      // Keep rendering responsive for very large logs.
+      if (pre.textContent.length > 800000) {
+        return;
+      }
+
+      var escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      var pattern = new RegExp(escaped, "gi");
+      var original = pre.textContent;
+
+      if (!pattern.test(original)) {
+        return;
+      }
+
+      pattern.lastIndex = 0;
+      var highlighted = original.replace(pattern, function (match) {
+        return "<mark>" + match + "</mark>";
+      });
+      pre.innerHTML = highlighted;
+
+      var nav = document.getElementById("match-nav");
+      var prevButton = document.getElementById("prev-match");
+      var nextButton = document.getElementById("next-match");
+      var count = document.getElementById("match-count");
+      var matches = Array.prototype.slice.call(pre.querySelectorAll("mark"));
+
+      if (!nav || !prevButton || !nextButton || !count || matches.length === 0) {
+        return;
+      }
+
+      nav.hidden = false;
+
+      var currentIndex = 0;
+
+      function updateCounter() {
+        count.textContent = "Match " + (currentIndex + 1) + " of " + matches.length;
+      }
+
+      function focusCurrentMatch() {
+        for (var i = 0; i < matches.length; i++) {
+          matches[i].classList.remove("current-match");
+        }
+
+        var current = matches[currentIndex];
+        current.classList.add("current-match");
+        current.scrollIntoView({ behavior: "smooth", block: "center" });
+        updateCounter();
+      }
+
+      function goToNext() {
+        currentIndex = (currentIndex + 1) % matches.length;
+        focusCurrentMatch();
+      }
+
+      function goToPrevious() {
+        currentIndex = (currentIndex - 1 + matches.length) % matches.length;
+        focusCurrentMatch();
+      }
+
+      nextButton.addEventListener("click", goToNext);
+      prevButton.addEventListener("click", goToPrevious);
+
+      var filterInput = document.getElementById("q");
+      var filterForm = document.getElementById("log-filter-form");
+      var quickFilters = document.querySelectorAll("[data-quick-filter]");
+
+      for (var j = 0; j < quickFilters.length; j++) {
+        quickFilters[j].addEventListener("click", function () {
+          if (!filterInput || !filterForm) {
+            return;
+          }
+          filterInput.value = this.getAttribute("data-quick-filter") || "";
+          filterForm.submit();
+        });
+      }
+
+      if (filterInput) {
+        filterInput.addEventListener("keydown", function (event) {
+          if (event.key !== "Enter") {
+            return;
+          }
+          event.preventDefault();
+          if (event.shiftKey) {
+            goToPrevious();
+            return;
+          }
+          goToNext();
+        });
+      }
+
+      focusCurrentMatch();
+    })();
+  </script>
+</body>
+</html>
