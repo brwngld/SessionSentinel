@@ -81,6 +81,27 @@ It automatically runs tests on:
 
 In GitHub, open your repository and click the **Actions** tab in the top menu to see run history and logs.
 
+## Screenshots
+
+SessionSentinel stores runtime screenshots in:
+
+- `screenshots/`
+
+Current screenshots in this project are mostly troubleshooting captures (for example login/run failures), and this folder is excluded from git by default to avoid leaking sensitive information.
+
+If you want UI screenshots to appear on GitHub:
+
+1. Take clean screenshots without credentials or personal data.
+2. Place them in a tracked folder like `docs/images/`.
+3. Add Markdown image links in this README.
+
+Example Markdown:
+
+```markdown
+![Dashboard](docs/images/dashboard.png)
+![Account Report](docs/images/account-report.png)
+```
+
 ## Notes
 
 - `.env`, local DB/logs, and generated artifacts are excluded via `.gitignore`.
