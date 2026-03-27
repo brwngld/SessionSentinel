@@ -10,3 +10,15 @@ requires-python = ">=3.10"
 
 [project.scripts]
 app = "flask_app:app"
+
+[tool.setuptools]
+py-modules = [
+	"flask_app",
+	"automation_runner",
+	"config",
+	"credential_store",
+	"db_tools",
+	"manage_users",
+	"main",
+]
+packages = ["helpers", "routes", "services", "utils"]
