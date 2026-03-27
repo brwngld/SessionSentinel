@@ -18,12 +18,21 @@
 
     <section class="card">
       <h2>Data Source</h2>
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div class="flash-stack">
+            {% for category, message in messages %}
+              <div class="flash-msg {{ category }}">{{ message }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
       <form method="get" action="{{ url_for('reports_dashboard') }}" class="source-form">
         <div class="field">
           <label>Run File</label>
           <select name="job_id" id="job-id-select" required>
             {% for item in report_files %}
-              <option value="{{ item.job_id }}" {% if item.job_id == selected_job_id %}selected{% endif %}>{{ item.job_id }} | {{ item.file_name }} ({{ item.file_key|upper }})</option>
+              <option value="{{ item.job_id }}" {% if item.job_id == selected_job_id %}selected{% endif %}>{{ item.job_id }} | {{ item.file_name }} ({{ item.file_key|upper }}){% if item.source == 'manual_upload' %} [UPLOAD]{% endif %}{% if item.pinned %} [PINNED]{% endif %}</option>
             {% endfor %}
           </select>
         </div>
@@ -36,19 +45,79 @@
         </div>
         <button type="submit">Build Report</button>
       </form>
+
+      <form method="post" action="{{ url_for('reports_upload') }}" enctype="multipart/form-data" class="upload-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="field">
+          <label>Upload CSV/XLSX</label>
+          <input type="file" name="report_file" accept=".csv,.xlsx" required>
+        </div>
+        <button type="submit">Upload File</button>
+      </form>
+
+      {% if recent_uploads %}
+      <div class="uploads-panel">
+        <div class="uploads-header">
+          <h3>Recent Uploads</h3>
+          <p class="subtle">Unpinned uploads auto-expire after {{ manual_upload_retention_days }} day(s).</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Uploaded</th>
+                <th>Name</th>
+                <th>Files</th>
+                <th>Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for up in recent_uploads %}
+              <tr>
+                <td>{{ up.created_at }}</td>
+                <td>{{ up.original_name or up.job_id }}</td>
+                <td>{{ up.file_keys|join(', ')|upper }}</td>
+                <td>{% if up.pinned %}Pinned{% else %}Auto-expire{% endif %}</td>
+                <td>
+                  <div class="upload-row-actions">
+                    <form method="post" action="{{ url_for('reports_upload_pin_toggle') }}">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                      <input type="hidden" name="job_id" value="{{ up.job_id }}">
+                      <input type="hidden" name="file_key" value="{% if 'csv' in up.file_keys %}csv{% else %}xlsx{% endif %}">
+                      <input type="hidden" name="pin" value="{% if up.pinned %}0{% else %}1{% endif %}">
+                      <button type="submit" class="btn-inline {% if up.pinned %}danger{% endif %}">{% if up.pinned %}Unpin{% else %}Pin{% endif %}</button>
+                    </form>
+                    <form method="post" action="{{ url_for('reports_upload_delete') }}" onsubmit="return confirm('Delete this upload permanently?');">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                      <input type="hidden" name="job_id" value="{{ up.job_id }}">
+                      <button type="submit" class="btn-inline danger">Delete</button>
+                    </form>
+                  </div>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+
       {% if not report_files %}
-        <div class="empty-state">No CSV/XLSX files available yet. Run a retrieval first.</div>
+        <div class="empty-state">No CSV/XLSX files available yet. Run a retrieval or upload one above.</div>
       {% endif %}
     </section>
 
     {% if summary %}
     <div class="report-tabs">
-      <button class="tab-btn active" data-tab="financial">Financial Report</button>
+      <button class="tab-btn {% if selected_retrieval_type != 'boe_status_dates' %}active{% endif %}" data-tab="financial">Financial Report</button>
       <button class="tab-btn" data-tab="account">Account Report</button>
+      <button class="tab-btn" data-tab="amount">Amount Report</button>
+      <button class="tab-btn {% if selected_retrieval_type == 'boe_status_dates' %}active{% endif %}" data-tab="boe-status">BOE Status Report</button>
     </div>
 
     <!-- FINANCIAL REPORT TAB -->
-    <div id="tab-financial" class="tab-content active">
+    <div id="tab-financial" class="tab-content {% if selected_retrieval_type != 'boe_status_dates' %}active{% endif %}">
     <section class="metrics-grid">
       <article class="metric card">
         <div class="metric-label">Selected File</div>
@@ -194,6 +263,103 @@
         <p class="subtle">Loading account report...</p>
       </div>
     </div>
+
+    <!-- AMOUNT REPORT TAB -->
+    <div id="tab-amount" class="tab-content">
+      <div id="amount-report-container">
+        <p class="subtle">Loading amount report...</p>
+      </div>
+    </div>
+
+    <!-- BOE STATUS REPORT TAB -->
+    <div id="tab-boe-status" class="tab-content {% if selected_retrieval_type == 'boe_status_dates' %}active{% endif %}">
+      {% if selected_retrieval_type == 'boe_status_dates' %}
+      <section class="metrics-grid">
+        <article class="metric card">
+          <div class="metric-label">Selected File</div>
+          <div class="metric-value metric-file">{{ selected_file_name }}</div>
+        </article>
+        <article class="metric card">
+          <div class="metric-label">Rows</div>
+          <div class="metric-value">{{ summary.total_rows }}</div>
+        </article>
+        <article class="metric card">
+          <div class="metric-label">Unique BoE No.</div>
+          <div class="metric-value">{{ summary.unique_boe }}</div>
+        </article>
+        <article class="metric card">
+          <div class="metric-label">Duplicate BoE No.</div>
+          <div class="metric-value">{{ summary.duplicate_boe_count }}</div>
+        </article>
+      </section>
+
+      <section class="grid-2">
+        <article class="card">
+          <h2>Status Breakdown (Processing Status)</h2>
+          {% if summary.boe_status_breakdown %}
+          <canvas id="boe-status-chart" height="180"></canvas>
+          {% else %}
+          <div class="empty-state">No Processing Status values found in selected BOE Status file.</div>
+          {% endif %}
+        </article>
+
+        <article class="card">
+          <h2>BOE Due Date Timeline</h2>
+          {% if summary.boe_due_timeline %}
+          <p class="subtle">Date column: <strong>{{ summary.boe_due_timeline_label }}</strong></p>
+          <canvas id="boe-timeline-chart" height="180"></canvas>
+          {% else %}
+          <div class="empty-state">No Due Date timeline could be built from this BOE Status file.</div>
+          {% endif %}
+        </article>
+      </section>
+
+      <section class="card">
+        <div class="preview-header">
+          <h2>BOE Status Preview (Current Page)</h2>
+          <div class="preview-controls">
+            <label for="boe-preview-page-size">Page size</label>
+            <select id="boe-preview-page-size">
+              {% for size in [10, 20, 50, 100, 200, 500] %}
+                <option value="{{ size }}" {% if summary.preview_page_size == size %}selected{% endif %}>{{ size }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        <p class="subtle">Showing rows <span id="boe-preview-start-row">{{ summary.preview_start_row }}</span> - <span id="boe-preview-end-row">{{ summary.preview_end_row }}</span> of <span id="boe-preview-total-rows">{{ summary.total_rows }}</span></p>
+        <div class="table-wrap">
+          <table id="boe-preview-table">
+            <thead id="boe-preview-table-head">
+              <tr>
+                {% for col in summary.preview_columns %}
+                  <th>{{ col }}</th>
+                {% endfor %}
+              </tr>
+            </thead>
+            <tbody id="boe-preview-table-body">
+              {% for row in summary.preview_rows %}
+                <tr>
+                  {% for col in summary.preview_columns %}
+                    <td>{{ row[col] }}</td>
+                  {% endfor %}
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="preview-pagination">
+          <a id="boe-prev-btn" class="page-btn {% if summary.preview_page <= 1 %}disabled{% endif %}">Previous</a>
+          <div id="boe-page-buttons"></div>
+          <span class="page-indicator">Page <span id="boe-current-page">{{ summary.preview_page }}</span> of <span id="boe-total-pages">{{ summary.preview_total_pages }}</span></span>
+          <a id="boe-next-btn" class="page-btn {% if summary.preview_page >= summary.preview_total_pages %}disabled{% endif %}">Next</a>
+        </div>
+      </section>
+      {% else %}
+      <section class="card">
+        <div class="empty-state">Select a BOE Status retrieval run in Data Source to populate this tab.</div>
+      </section>
+      {% endif %}
+    </div>
     {% endif %}
 
     {% include "_footer.html" %}
@@ -216,18 +382,47 @@
   {% if summary %}
   <script id="report-data" type="application/json">{{ {
     "status": (summary.status_breakdown or []),
+    "boe_status": (summary.boe_status_breakdown or []),
     "regime": (summary.regime_breakdown or []),
     "creator": (summary.created_by_breakdown or []),
-    "timeline": (summary.timeline or [])
+    "timeline": (summary.timeline or []),
+    "boe_due_timeline": (summary.boe_due_timeline or [])
   }|tojson }}</script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script>
+    function getSelectedReportParams() {
+      const params = new URLSearchParams(window.location.search);
+      let jobId = params.get('job_id');
+      let fileKey = params.get('file_key');
+
+      if (!jobId) {
+        const jobSelect = document.getElementById('job-id-select');
+        if (jobSelect) {
+          jobId = jobSelect.value;
+        }
+      }
+
+      if (!fileKey) {
+        const fileKeySelect = document.querySelector('select[name="file_key"]');
+        if (fileKeySelect) {
+          fileKey = fileKeySelect.value;
+        }
+      }
+
+      return {
+        jobId: jobId || '',
+        fileKey: fileKey || '',
+      };
+    }
+
     const reportDataEl = document.getElementById('report-data');
     const reportData = reportDataEl ? JSON.parse(reportDataEl.textContent) : {};
     const statusData = reportData.status || [];
+    const boeStatusData = reportData.boe_status || [];
     const regimeData = reportData.regime || [];
     const creatorData = reportData.creator || [];
     const timeline = reportData.timeline || [];
+    const boeDueTimeline = reportData.boe_due_timeline || [];
 
     if (statusData.length) {
       new Chart(document.getElementById('status-chart'), {
@@ -293,10 +488,45 @@
       });
     }
 
+    if (boeStatusData.length && document.getElementById('boe-status-chart')) {
+      new Chart(document.getElementById('boe-status-chart'), {
+        type: 'bar',
+        data: {
+          labels: boeStatusData.map((x) => x.label),
+          datasets: [{
+            label: 'Entries',
+            data: boeStatusData.map((x) => x.count),
+            backgroundColor: '#1d6d35',
+            borderRadius: 6,
+          }],
+        },
+        options: { responsive: true, plugins: { legend: { display: false } } },
+      });
+    }
+
+    if (boeDueTimeline.length && document.getElementById('boe-timeline-chart')) {
+      new Chart(document.getElementById('boe-timeline-chart'), {
+        type: 'line',
+        data: {
+          labels: boeDueTimeline.map((x) => x.date),
+          datasets: [{
+            label: 'BOE due dates per day',
+            data: boeDueTimeline.map((x) => x.count),
+            borderColor: '#1d6d35',
+            backgroundColor: 'rgba(29, 109, 53, 0.18)',
+            fill: true,
+            tension: 0.25,
+          }],
+        },
+        options: { responsive: true },
+      });
+    }
+
     // AJAX pagination and page size handler
     function buildPreviewTable() {
-      const jobId = new URLSearchParams(window.location.search).get('job_id');
-      const fileKey = new URLSearchParams(window.location.search).get('file_key');
+      const selected = getSelectedReportParams();
+      const jobId = selected.jobId;
+      const fileKey = selected.fileKey;
       const page = parseInt(document.getElementById('current-page').textContent);
       const pageSize = document.getElementById('preview-page-size').value;
 
@@ -388,9 +618,155 @@
       buildPreviewTable();
     });
 
+    // Initialize pagination on page load
+    function initializePreview() {
+      const currentPageEl = document.getElementById('current-page');
+      const totalPagesEl = document.getElementById('total-pages');
+      if (currentPageEl && totalPagesEl) {
+        const currentPage = parseInt(currentPageEl.textContent);
+        const totalPages = parseInt(totalPagesEl.textContent);
+        renderPageButtons(currentPage, totalPages);
+        updatePrevNextButtons(currentPage, totalPages);
+      }
+    }
+
+    // Initialize when DOM is ready
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initializePreview);
+    } else {
+      initializePreview();
+    }
+
+    // BOE Status preview pagination and page size handler
+    function buildBoePreviewTable() {
+      const pageEl = document.getElementById('boe-current-page');
+      const pageSizeEl = document.getElementById('boe-preview-page-size');
+      if (!pageEl || !pageSizeEl) {
+        return;
+      }
+
+      const selected = getSelectedReportParams();
+      const jobId = selected.jobId;
+      const fileKey = selected.fileKey;
+      const page = parseInt(pageEl.textContent, 10);
+      const pageSize = pageSizeEl.value;
+
+      if (!jobId || !fileKey) return;
+
+      fetch(`/reports/preview?job_id=${encodeURIComponent(jobId)}&file_key=${encodeURIComponent(fileKey)}&page=${page}&page_size=${pageSize}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.error) {
+            console.error('BOE preview error:', data.error);
+            return;
+          }
+
+          const thead = document.getElementById('boe-preview-table-head');
+          const tbody = document.getElementById('boe-preview-table-body');
+          if (!thead || !tbody) {
+            return;
+          }
+
+          thead.innerHTML = '<tr>' + data.preview_columns.map(col => `<th>${col}</th>`).join('') + '</tr>';
+          tbody.innerHTML = data.preview_rows.map(row =>
+            '<tr>' + data.preview_columns.map(col => `<td>${row[col] || ''}</td>`).join('') + '</tr>'
+          ).join('');
+
+          document.getElementById('boe-preview-start-row').textContent = data.preview_start_row;
+          document.getElementById('boe-preview-end-row').textContent = data.preview_end_row;
+          document.getElementById('boe-preview-total-rows').textContent = data.total_rows;
+          document.getElementById('boe-current-page').textContent = data.preview_page;
+          document.getElementById('boe-total-pages').textContent = data.preview_total_pages;
+
+          renderBoePageButtons(data.preview_page, data.preview_total_pages);
+          updateBoePrevNextButtons(data.preview_page, data.preview_total_pages);
+        })
+        .catch(err => console.error('BOE preview fetch error:', err));
+    }
+
+    function renderBoePageButtons(currentPage, totalPages) {
+      const container = document.getElementById('boe-page-buttons');
+      if (!container) {
+        return;
+      }
+
+      const startPage = Math.max(1, currentPage - 2);
+      const endPage = Math.min(totalPages, currentPage + 2);
+      let html = '';
+
+      for (let p = startPage; p <= endPage; p++) {
+        const isActive = p === currentPage;
+        html += `<a class="page-btn ${isActive ? 'active' : ''}" data-boe-page="${p}">${p}</a>`;
+      }
+
+      container.innerHTML = html;
+      container.querySelectorAll('.page-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          const page = parseInt(btn.getAttribute('data-boe-page'), 10);
+          document.getElementById('boe-current-page').textContent = page;
+          buildBoePreviewTable();
+        });
+      });
+    }
+
+    function updateBoePrevNextButtons(currentPage, totalPages) {
+      const prevBtn = document.getElementById('boe-prev-btn');
+      const nextBtn = document.getElementById('boe-next-btn');
+      if (!prevBtn || !nextBtn) {
+        return;
+      }
+
+      prevBtn.classList.toggle('disabled', currentPage <= 1);
+      nextBtn.classList.toggle('disabled', currentPage >= totalPages);
+
+      prevBtn.onclick = (e) => {
+        e.preventDefault();
+        if (currentPage > 1) {
+          document.getElementById('boe-current-page').textContent = currentPage - 1;
+          buildBoePreviewTable();
+        }
+      };
+
+      nextBtn.onclick = (e) => {
+        e.preventDefault();
+        if (currentPage < totalPages) {
+          document.getElementById('boe-current-page').textContent = currentPage + 1;
+          buildBoePreviewTable();
+        }
+      };
+    }
+
+    function initializeBoePreview() {
+      const pageSizeEl = document.getElementById('boe-preview-page-size');
+      const currentPageEl = document.getElementById('boe-current-page');
+      const totalPagesEl = document.getElementById('boe-total-pages');
+      if (!pageSizeEl || !currentPageEl || !totalPagesEl) {
+        return;
+      }
+
+      pageSizeEl.addEventListener('change', () => {
+        document.getElementById('boe-current-page').textContent = '1';
+        buildBoePreviewTable();
+      });
+
+      const currentPage = parseInt(currentPageEl.textContent, 10);
+      const totalPages = parseInt(totalPagesEl.textContent, 10);
+      renderBoePageButtons(currentPage, totalPages);
+      updateBoePrevNextButtons(currentPage, totalPages);
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initializeBoePreview);
+    } else {
+      initializeBoePreview();
+    }
+
     // ===== ACCOUNT REPORT TAB FUNCTIONALITY =====
     const tabBtns = document.querySelectorAll('.tab-btn');
     const tabContents = document.querySelectorAll('.tab-content');
+    let latestAccountReport = null;
+    let latestAccountReportContext = { jobId: '', fileKey: '' };
 
     tabBtns.forEach(btn => {
       btn.addEventListener('click', () => {
@@ -408,12 +784,65 @@
         if (tabName === 'account') {
           loadAccountReport();
         }
+        if (tabName === 'amount') {
+          loadAmountReport();
+        }
       });
     });
 
+    function sortAccountTable(colIndex, colName) {
+      const table = document.getElementById('account-summary-table');
+      const tbody = table.querySelector('tbody');
+      if (!tbody) return;
+
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      const currentSort = tbody.getAttribute('data-sort-col');
+      const currentDir = tbody.getAttribute('data-sort-dir') || 'asc';
+      
+      // Toggle direction if same column clicked, else sort ascending
+      const newDir = (currentSort === String(colIndex) && currentDir === 'asc') ? 'desc' : 'asc';
+      
+      rows.sort((a, b) => {
+        let aVal, bVal;
+        
+        if (colIndex === 0) {
+          // Account name: text comparison
+          aVal = a.cells[colIndex].textContent.trim().split(' why?')[0];
+          bVal = b.cells[colIndex].textContent.trim().split(' why?')[0];
+          return newDir === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+        } else if (colIndex === 1 || colIndex === 2) {
+          // Total Entries or Low Confidence: numeric comparison
+          aVal = parseInt(a.cells[colIndex].textContent.trim(), 10) || 0;
+          bVal = parseInt(b.cells[colIndex].textContent.trim(), 10) || 0;
+          return newDir === 'asc' ? aVal - bVal : bVal - aVal;
+        } else if (colIndex === 4) {
+          aVal = parseFloat((a.cells[colIndex].textContent || '0').replace(/,/g, '')) || 0;
+          bVal = parseFloat((b.cells[colIndex].textContent || '0').replace(/,/g, '')) || 0;
+          return newDir === 'asc' ? aVal - bVal : bVal - aVal;
+        }
+      });
+
+      // Update tbody with sorted rows
+      rows.forEach(row => tbody.appendChild(row));
+      
+      // Update sort indicator
+      document.querySelectorAll('.sort-indicator').forEach(span => {
+        span.textContent = '';
+      });
+      const activeIndicator = document.querySelector(`.sort-indicator[data-col="${colIndex}"]`);
+      if (activeIndicator) {
+        activeIndicator.textContent = newDir === 'asc' ? ' △' : ' ▽';
+      }
+      
+      // Store sort state
+      tbody.setAttribute('data-sort-col', colIndex);
+      tbody.setAttribute('data-sort-dir', newDir);
+    }
+
     async function loadAccountReport() {
-      const jobId = new URLSearchParams(window.location.search).get('job_id');
-      const fileKey = new URLSearchParams(window.location.search).get('file_key');
+      const selected = getSelectedReportParams();
+      const jobId = selected.jobId;
+      const fileKey = selected.fileKey;
 
       if (!jobId || !fileKey) {
         document.getElementById('account-report-container').innerHTML = `<p class="error">Missing job_id or file_key</p>`;
@@ -438,6 +867,8 @@
           return;
         }
 
+        latestAccountReport = data;
+        latestAccountReportContext = { jobId, fileKey };
         renderAccountReport(data, jobId, fileKey);
       } catch (err) {
         console.error('Error loading account report:', err);
@@ -450,13 +881,62 @@
       const uncertainData = data.uncertain_matches || [];
       const unassignedData = data.unassigned_rows || [];
       const assignedData = data.assigned_rows || [];
-      const accountNames = (data.accounts || []).map(a => a.name);
+      const baseAccountNames = (data.accounts || []).map(a => a.name);
+      let customAccounts = Array.isArray(data.custom_account_names)
+        ? data.custom_account_names.filter(name => typeof name === 'string' && name.trim())
+        : [];
+
+      let accountNames = Array.from(new Set([
+        ...baseAccountNames,
+        ...customAccounts,
+      ].filter(name => typeof name === 'string' && name.trim())));
+
+      function recomputeAccountNames() {
+        accountNames = Array.from(new Set([
+          ...baseAccountNames,
+          ...customAccounts,
+        ].filter(name => typeof name === 'string' && name.trim())));
+      }
+
+      function confidenceBadge(value) {
+        const score = Number(value || 0);
+        let band = 'low';
+        let hint = 'Low confidence: review recommended before final output.';
+        if (score >= 0.95) {
+          band = 'high';
+          hint = 'High confidence: strong token alignment and/or explicit user decision.';
+        } else if (score >= 0.86) {
+          band = 'mid';
+          hint = 'Medium confidence: likely match, but still review when uncertain.';
+        }
+        return `<span class="confidence-badge confidence-${band}" title="${hint}">${score.toFixed(2)}</span>`;
+      }
 
       function targetAccountSelect(cls, idx, selected = '') {
         const options = accountNames
           .map(name => `<option value="${name}" ${name === selected ? 'selected' : ''}>${name}</option>`)
           .join('');
         return `<select class="${cls}" data-idx="${idx}">${options}</select>`;
+      }
+
+      function refreshAllAccountSelects() {
+        const selects = document.querySelectorAll('.uncertain-target, .assigned-target, .unassigned-target');
+        selects.forEach(select => {
+          const currentValue = select.value;
+          select.innerHTML = '';
+          accountNames.forEach(name => {
+            const option = document.createElement('option');
+            option.value = name;
+            option.textContent = name;
+            if (name === currentValue) {
+              option.selected = true;
+            }
+            select.appendChild(option);
+          });
+          if (!select.value && accountNames.length) {
+            select.value = accountNames[0];
+          }
+        });
       }
 
       // Show error if present
@@ -476,31 +956,64 @@
         return;
       }
 
-      html += '<div class="accounts-grid">';
-      
-      // Render each account card
-      data.accounts.forEach(account => {
+      const accountSummaryRows = data.accounts.map(account => {
         const reasonText = (account.match_reasons && account.match_reasons.length)
           ? account.match_reasons.join(', ')
           : 'no reason available';
-        html += `
-          <div class="account-card">
-            <div class="account-header">
-              <h3>
-                ${account.name}
-                <span class="match-hint" title="Matched by: ${reasonText}">why?</span>
-              </h3>
-              <span class="account-count">${account.count} entries</span>
-            </div>
-            <div class="account-actions">
-              <button class="btn btn-rename account-rename" data-account="${encodeURIComponent(account.name)}">Rename</button>
-              <a href="/reports/account/download/${encodeURIComponent(account.name)}?job_id=${encodeURIComponent(jobId)}&file_key=${encodeURIComponent(fileKey)}" class="btn btn-download">Download</a>
+        const encodedName = encodeURIComponent(account.name || '');
+        const lowConfidence = Number(account.low_confidence_count || 0);
+        const pricingMode = String(account.pricing_mode || 'none');
+        const pricingLabel = pricingMode === 'automatic' ? 'Automatic' : (pricingMode === 'manual' ? 'Manual' : 'Without Amount');
+        const currencyCode = String(account.currency_code || 'GHS').toUpperCase();
+        const amountTotal = Number(account.amount_total || 0);
+        return `
+          <tr>
+            <td class="account-name-cell">${account.name || ''} <span class="match-hint" title="Matched by: ${reasonText}">why?</span></td>
+            <td>${account.count || 0}</td>
+            <td>${lowConfidence}</td>
+            <td>${pricingLabel}${pricingMode !== 'none' ? ` (${currencyCode})` : ''}</td>
+            <td>${formatMoney(amountTotal, currencyCode)}</td>
+            <td>
+              <div class="account-actions-table">
+                <button class="btn btn-rename account-rename" title="Rename this grouped account label while keeping rows assigned." data-account="${encodedName}">Rename</button>
+                <button class="btn btn-delete-account account-delete" title="Release all rows in this account back to Unassigned so they can be reassigned." data-account="${encodedName}">Delete</button>
+                <button class="btn btn-price account-price" title="Calculate pricing for this account by fixed rate or per line item." data-account="${encodedName}">Price</button>
+                <a href="/reports/account/view/${encodedName}?job_id=${encodeURIComponent(jobId)}&file_key=${encodeURIComponent(fileKey)}" class="btn btn-download" title="View this account's grouped data in the browser." target="_blank">View</a>
+                <a href="/reports/account/download/${encodedName}?job_id=${encodeURIComponent(jobId)}&file_key=${encodeURIComponent(fileKey)}" class="btn btn-download" title="Download this account's grouped data as PDF.">Download</a>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      html += `
+        <div class="card account-summary-section">
+          <div class="account-summary-header">
+            <h2>Account Groups</h2>
+            <div class="account-summary-controls">
+              <button type="button" id="add-account-btn" class="btn btn-add-account" title="Add a custom account name for assignment and moves.">Add Account</button>
+              <button type="button" id="remove-account-btn" class="btn btn-remove-account" title="Remove a custom account name from assignment and move lists.">Remove Account</button>
+              <a href="/reports/account/view-all?job_id=${encodeURIComponent(jobId)}&file_key=${encodeURIComponent(fileKey)}" class="btn btn-download" title="View all account groups in one page." target="_blank">View All</a>
+              <a href="/reports/account/download-all?job_id=${encodeURIComponent(jobId)}&file_key=${encodeURIComponent(fileKey)}" class="btn btn-download" title="Download all account groups as one PDF.">Download All</a>
             </div>
           </div>
-        `;
-      });
-
-      html += '</div>';
+          <div class="table-wrap">
+            <table class="accounts-table" id="account-summary-table">
+              <thead>
+                <tr>
+                  <th onclick="sortAccountTable(0, 'Account')" style="cursor: pointer; user-select: none;">Account <span class="sort-indicator" data-col="0"></span></th>
+                  <th onclick="sortAccountTable(1, 'Total Entries')" style="cursor: pointer; user-select: none;">Total Entries <span class="sort-indicator" data-col="1"></span></th>
+                  <th onclick="sortAccountTable(2, 'Low Confidence')" style="cursor: pointer; user-select: none;">Low Confidence <span class="sort-indicator" data-col="2"></span></th>
+                  <th>Pricing Mode</th>
+                  <th onclick="sortAccountTable(4, 'Amount Total')" style="cursor: pointer; user-select: none;">Amount Total <span class="sort-indicator" data-col="4"></span></th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>${accountSummaryRows}</tbody>
+            </table>
+          </div>
+        </div>
+      `;
 
       if (data.uncertain_count && data.uncertain_count > 0) {
         const uncertainRows = uncertainData.slice(0, 60).map((item, idx) => `
@@ -515,10 +1028,10 @@
             <td>${item.date || ''}</td>
             <td class="action-cell">
               ${targetAccountSelect('uncertain-target', idx, item.suggested_account || '')}
-              <button class="uncertain-action uncertain-accept" data-idx="${idx}">Accept</button>
-              <button class="uncertain-action uncertain-separate" data-idx="${idx}">Separate</button>
-              <button class="uncertain-action uncertain-unassign" data-idx="${idx}">Unassign</button>
-              <button class="uncertain-action uncertain-reset" data-idx="${idx}">Reset</button>
+              <button class="uncertain-action uncertain-accept" title="Accept suggested mapping for this reference key." data-idx="${idx}">Accept</button>
+              <button class="uncertain-action uncertain-separate" title="Create a distinct account mapping for this reference." data-idx="${idx}">Separate</button>
+              <button class="uncertain-action uncertain-unassign" title="Force this reference key to remain unassigned until you map it." data-idx="${idx}">Unassign</button>
+              <button class="uncertain-action uncertain-reset" title="Remove saved override and return to automatic matching." data-idx="${idx}">Reset</button>
             </td>
           </tr>
         `).join('');
@@ -526,7 +1039,25 @@
         html += `
           <div class="uncertain-section card">
             <h2>Review Uncertain Matches (${data.uncertain_count})</h2>
-            <p class="subtle">These are auto-grouped with lower confidence. Please review before final reporting.</p>
+            <p class="subtle">These are auto-grouped with lower confidence. Please review before final reporting. Hover confidence and action buttons for guidance.</p>
+            <p class="subtle">Accept saves mapping, Reset removes override.</p>
+            <div class="confidence-legend">
+              <div class="legend-title">Confidence Levels:</div>
+              <div class="legend-items">
+                <div class="legend-item">
+                  <span class="confidence-badge confidence-high">●</span>
+                  <strong>High (0.95–1.00):</strong> Suggests a clear match between reference and saved account.
+                </div>
+                <div class="legend-item">
+                  <span class="confidence-badge confidence-mid">●</span>
+                  <strong>Mid (0.86–0.95):</strong> Fair match; worth reviewing side-by-side before accepting.
+                </div>
+                <div class="legend-item">
+                  <span class="confidence-badge confidence-low">●</span>
+                  <strong>Low (&lt;0.86):</strong> Weak match; recommend manual review or separate into new account.
+                </div>
+              </div>
+            </div>
             <div class="table-wrap">
               <table>
                 <thead>
@@ -561,12 +1092,12 @@
             <td>${item.created_by || ''}</td>
             <td>${item.boe || ''}</td>
             <td>${item.date || ''}</td>
-            <td>${(item.confidence || 0).toFixed(2)}</td>
+            <td>${confidenceBadge(item.confidence)}</td>
             <td class="action-cell">
               ${targetAccountSelect('assigned-target', idx, item.current_account || '')}
-              <button class="uncertain-action assigned-move" data-idx="${idx}">Move</button>
-              <button class="uncertain-action assigned-unassign" data-idx="${idx}">Unassign</button>
-              <button class="uncertain-action assigned-reset" data-idx="${idx}">Reset</button>
+              <button class="uncertain-action assigned-move" title="Move this reference to a different account selection." data-idx="${idx}">Move</button>
+              <button class="uncertain-action assigned-unassign" title="Mark this reference as unassigned for manual reassignment." data-idx="${idx}">Unassign</button>
+              <button class="uncertain-action assigned-reset" title="Remove manual override and use automatic matching again." data-idx="${idx}">Reset</button>
             </td>
           </tr>
         `).join('');
@@ -575,6 +1106,24 @@
           <div class="uncertain-section card">
             <h2>Move Categorized Rows</h2>
             <p class="subtle">Reassign rows between account names, then table refreshes immediately.</p>
+            <p class="subtle">Move saves reassignment, Reset removes override.</p>
+            <div class="confidence-legend">
+              <div class="legend-title">Confidence Levels:</div>
+              <div class="legend-items">
+                <div class="legend-item">
+                  <span class="confidence-badge confidence-high">●</span>
+                  <strong>High (0.95–1.00):</strong> Suggests a clear match between reference and saved account.
+                </div>
+                <div class="legend-item">
+                  <span class="confidence-badge confidence-mid">●</span>
+                  <strong>Mid (0.86–0.95):</strong> Fair match; worth reviewing side-by-side before accepting.
+                </div>
+                <div class="legend-item">
+                  <span class="confidence-badge confidence-low">●</span>
+                  <strong>Low (&lt;0.86):</strong> Weak match; recommend manual review or separate into new account.
+                </div>
+              </div>
+            </div>
             <div class="table-wrap">
               <table>
                 <thead>
@@ -607,7 +1156,7 @@
             <td>${item.date || ''}</td>
             <td class="action-cell">
               ${targetAccountSelect('unassigned-target', idx)}
-              <button class="uncertain-action unassigned-assign" data-idx="${idx}">Assign</button>
+              <button class="uncertain-action unassigned-assign" title="Assign this unassigned entry to selected account." data-idx="${idx}">Assign</button>
             </td>
           </tr>
         `).join('');
@@ -650,6 +1199,117 @@
           await renameAccount(current, renamed.trim());
         });
       });
+      document.querySelectorAll('.account-delete').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const account = decodeURIComponent(btn.getAttribute('data-account') || '');
+          if (!account) return;
+          const confirmed = window.confirm(`Delete account '${account}' and release all its rows to Unassigned?`);
+          if (!confirmed) return;
+          await deleteAccount(account);
+        });
+      });
+      document.querySelectorAll('.account-price').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const account = decodeURIComponent(btn.getAttribute('data-account') || '');
+          if (!account) return;
+          const accountData = (data.accounts || []).find(item => String(item.name || '') === account);
+          if (!accountData) {
+            alert('Account rows could not be loaded for pricing.');
+            return;
+          }
+          showPricingModal(accountData);
+        });
+      });
+
+      renderAmountReport(data, jobId, fileKey);
+
+      const addAccountBtn = document.getElementById('add-account-btn');
+      if (addAccountBtn) {
+        addAccountBtn.addEventListener('click', async () => {
+          const custom = window.prompt('Enter new account name:');
+          if (!custom || !custom.trim()) return;
+          const name = custom.trim();
+          const exists = accountNames.some(existing => existing.toUpperCase() === name.toUpperCase());
+          if (exists) {
+            alert('This account name already exists.');
+            return;
+          }
+
+          try {
+            const res = await fetch('/reports/account/custom/add', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ account_name: name }),
+            });
+            const payload = await res.json();
+            if (!res.ok || !payload.success) {
+              alert(payload.error || 'Unable to add custom account');
+              return;
+            }
+
+            customAccounts = Array.isArray(payload.custom_account_names)
+              ? payload.custom_account_names
+              : customAccounts;
+            recomputeAccountNames();
+            refreshAllAccountSelects();
+            alert(`Added account '${name}'. You can now assign or move rows to it.`);
+          } catch (err) {
+            console.error('Add custom account failed:', err);
+            alert('Unable to add custom account');
+          }
+        });
+      }
+
+      const removeAccountBtn = document.getElementById('remove-account-btn');
+      if (removeAccountBtn) {
+        removeAccountBtn.addEventListener('click', async () => {
+          if (!customAccounts.length) {
+            alert('No custom accounts to remove.');
+            return;
+          }
+
+          const listText = customAccounts.map((name, index) => `${index + 1}. ${name}`).join('\n');
+          const input = window.prompt(`Enter number or exact name to remove:\n\n${listText}`);
+          if (!input || !input.trim()) return;
+          const token = input.trim();
+
+          let removeName = '';
+          const asNumber = parseInt(token, 10);
+          if (!Number.isNaN(asNumber) && asNumber >= 1 && asNumber <= customAccounts.length) {
+            removeName = customAccounts[asNumber - 1];
+          } else {
+            removeName = customAccounts.find(name => name.toUpperCase() === token.toUpperCase()) || '';
+          }
+
+          if (!removeName) {
+            alert('Could not find that custom account.');
+            return;
+          }
+
+          try {
+            const res = await fetch('/reports/account/custom/remove', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ account_name: removeName }),
+            });
+            const payload = await res.json();
+            if (!res.ok || !payload.success) {
+              alert(payload.error || 'Unable to remove custom account');
+              return;
+            }
+
+            customAccounts = Array.isArray(payload.custom_account_names)
+              ? payload.custom_account_names
+              : [];
+            recomputeAccountNames();
+            refreshAllAccountSelects();
+            alert(`Removed custom account '${removeName}'.`);
+          } catch (err) {
+            console.error('Remove custom account failed:', err);
+            alert('Unable to remove custom account');
+          }
+        });
+      }
 
       if (data.uncertain_count && data.uncertain_count > 0) {
         document.querySelectorAll('.uncertain-accept').forEach(btn => {
@@ -782,6 +1442,123 @@
       }
     }
 
+    async function loadAmountReport() {
+      const selected = getSelectedReportParams();
+      const jobId = selected.jobId;
+      const fileKey = selected.fileKey;
+
+      if (!jobId || !fileKey) {
+        document.getElementById('amount-report-container').innerHTML = `<p class="error">Missing job_id or file_key</p>`;
+        return;
+      }
+
+      if (!latestAccountReport || latestAccountReportContext.jobId !== jobId || latestAccountReportContext.fileKey !== fileKey) {
+        await loadAccountReport();
+      } else {
+        renderAmountReport(latestAccountReport, jobId, fileKey);
+      }
+    }
+
+    function renderAmountReport(data, jobId, fileKey) {
+      const container = document.getElementById('amount-report-container');
+      if (!container) {
+        return;
+      }
+
+      if (!data || data.error) {
+        container.innerHTML = `<p class="error">${(data && data.error) || 'Unable to build amount report'}</p>`;
+        return;
+      }
+
+      const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+      if (!accounts.length) {
+        container.innerHTML = '<p class="empty-state">No account groups available for amount report.</p>';
+        return;
+      }
+
+      const totalAmount = Number(data.amount_report_total || 0);
+      const accountsWithAmount = Number(data.amount_report_accounts_with_amount || 0);
+      const totalsByCurrency = {};
+      let totalConvertedGhs = 0;
+      let hasAnyConvertedGhs = false;
+
+      const rowsHtml = accounts.map((account) => {
+        const encodedName = encodeURIComponent(account.name || '');
+        const pricingMode = String(account.pricing_mode || 'none');
+        const pricingLabel = pricingMode === 'automatic' ? 'Automatic' : (pricingMode === 'manual' ? 'Manual' : 'Without Amount');
+        const fixedPrice = Number(account.fixed_price || 0);
+        const currencyCode = String(account.currency_code || 'GHS').toUpperCase();
+        const manualRate = Number(account.manual_rate || 0);
+        const amountTotal = Number(account.amount_total || 0);
+        if (!totalsByCurrency[currencyCode]) {
+          totalsByCurrency[currencyCode] = 0;
+        }
+        totalsByCurrency[currencyCode] += amountTotal;
+        const amountWords = amountTotal > 0 ? amountInWords(amountTotal, currencyCode) : '-';
+        const convertedGhs = currencyCode === 'USD' && Number.isFinite(manualRate) && manualRate > 0
+          ? amountTotal * manualRate
+          : (currencyCode === 'GHS' ? amountTotal : null);
+        if (convertedGhs !== null) {
+          hasAnyConvertedGhs = true;
+          totalConvertedGhs += convertedGhs;
+        }
+
+        return `
+          <tr>
+            <td>${account.name || ''}</td>
+            <td>${Number(account.count || 0)}</td>
+            <td>${pricingLabel}</td>
+            <td>${currencyCode}</td>
+            <td>${formatMoney(fixedPrice, currencyCode)}</td>
+            <td>${formatMoney(amountTotal, currencyCode)}</td>
+            <td>${convertedGhs === null ? '-' : formatMoney(convertedGhs, 'GHS')}</td>
+            <td>${amountWords}</td>
+            <td>
+              <div class="account-actions-table">
+                <a href="/reports/account/view/${encodedName}?job_id=${encodeURIComponent(jobId)}&file_key=${encodeURIComponent(fileKey)}" class="btn btn-download" target="_blank">View</a>
+                <a href="/reports/account/download/${encodedName}?job_id=${encodeURIComponent(jobId)}&file_key=${encodeURIComponent(fileKey)}" class="btn btn-download">PDF</a>
+                <a href="/reports/account/download-priced/${encodedName}/csv?job_id=${encodeURIComponent(jobId)}&file_key=${encodeURIComponent(fileKey)}" class="btn btn-download">CSV</a>
+                <a href="/reports/account/download-priced/${encodedName}/xlsx?job_id=${encodeURIComponent(jobId)}&file_key=${encodeURIComponent(fileKey)}" class="btn btn-download">XLSX</a>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      container.innerHTML = `
+        <section class="card account-summary-section">
+          <div class="account-summary-header">
+            <h2>Amount Report</h2>
+            <div class="account-summary-controls">
+              <a href="/reports/account/download-priced-all/csv?job_id=${encodeURIComponent(jobId)}&file_key=${encodeURIComponent(fileKey)}" class="btn btn-download">Download All CSV</a>
+              <a href="/reports/account/download-priced-all/xlsx?job_id=${encodeURIComponent(jobId)}&file_key=${encodeURIComponent(fileKey)}" class="btn btn-download">Download All XLSX</a>
+            </div>
+          </div>
+          <p class="subtle">Accounts with amount: <strong>${accountsWithAmount}</strong> | Overall total amount (mixed currencies): <strong>${totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></p>
+          <p class="subtle">${Object.keys(totalsByCurrency).sort().map((code) => `${formatMoney(totalsByCurrency[code], code)} (${amountInWords(totalsByCurrency[code], code)})`).join(' | ')}</p>
+          ${hasAnyConvertedGhs ? `<p class="subtle">Total in GHS (using manual USD rates): <strong>${formatMoney(totalConvertedGhs, 'GHS')}</strong> (${amountInWords(totalConvertedGhs, 'GHS')})</p>` : ''}
+          <div class="table-wrap">
+            <table class="accounts-table">
+              <thead>
+                <tr>
+                  <th>Account</th>
+                  <th>Rows</th>
+                  <th>Pricing Mode</th>
+                  <th>Currency</th>
+                  <th>Fixed Price</th>
+                  <th>Amount Total</th>
+                  <th>Converted Total (GHS)</th>
+                  <th>Amount In Words</th>
+                  <th>Exports</th>
+                </tr>
+              </thead>
+              <tbody>${rowsHtml}</tbody>
+            </table>
+          </div>
+        </section>
+      `;
+    }
+
     async function saveUncertainDecision(rawUserRef, canonicalAccount, action, context = {}) {
       try {
         const res = await fetch('/reports/account/decision', {
@@ -834,6 +1611,30 @@
         alert('Unable to rename account');
       }
     }
+    async function deleteAccount(accountName) {
+      const jobId = new URLSearchParams(window.location.search).get('job_id');
+      const fileKey = new URLSearchParams(window.location.search).get('file_key');
+      try {
+        const res = await fetch('/reports/account/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            job_id: jobId,
+            file_key: fileKey,
+            account_name: accountName,
+          }),
+        });
+        const payload = await res.json();
+        if (!res.ok || !payload.success) {
+          alert(payload.error || 'Unable to delete account');
+          return;
+        }
+        await loadAccountReport();
+      } catch (err) {
+        console.error('Delete account failed:', err);
+        alert('Unable to delete account');
+      }
+    }
 
     function showAssignModal(accounts) {
       const modal = document.getElementById('assign-modal');
@@ -850,15 +1651,321 @@
       modal.style.display = 'block';
     }
 
+    function normalizeMoney(value) {
+      const num = Number(value);
+      if (!Number.isFinite(num)) {
+        return 0;
+      }
+      return Math.max(0, num);
+    }
+
+    function normalizeRate(value) {
+      if (value === null || value === undefined || String(value).trim() === '') {
+        return null;
+      }
+      const num = Number(value);
+      if (!Number.isFinite(num) || num <= 0) {
+        return null;
+      }
+      return num;
+    }
+
+    function formatMoney(amount, currencyCode = 'GHS') {
+      const code = String(currencyCode || 'GHS').toUpperCase();
+      const num = Number(amount || 0);
+      const safe = Number.isFinite(num) ? num : 0;
+      return `${code} ${safe.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
+
+    function intToWords(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n < 0) {
+        return 'zero';
+      }
+      const ones = [
+        'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
+        'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'
+      ];
+      const tens = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+
+      function underThousand(num) {
+        let x = num;
+        const parts = [];
+        if (x >= 100) {
+          parts.push(`${ones[Math.floor(x / 100)]} hundred`);
+          x %= 100;
+        }
+        if (x >= 20) {
+          const t = tens[Math.floor(x / 10)];
+          x %= 10;
+          parts.push(x ? `${t}-${ones[x]}` : t);
+        } else if (x > 0) {
+          parts.push(ones[x]);
+        }
+        return parts.join(' ') || 'zero';
+      }
+
+      if (n === 0) {
+        return 'zero';
+      }
+
+      let remaining = Math.floor(n);
+      const scales = [
+        [1000000000, 'billion'],
+        [1000000, 'million'],
+        [1000, 'thousand'],
+      ];
+      const out = [];
+      scales.forEach(([scale, label]) => {
+        if (remaining >= scale) {
+          const chunk = Math.floor(remaining / scale);
+          out.push(`${underThousand(chunk)} ${label}`);
+          remaining %= scale;
+        }
+      });
+      if (remaining > 0) {
+        out.push(underThousand(remaining));
+      }
+      return out.join(' ');
+    }
+
+    function amountInWords(amount, currencyCode = 'GHS') {
+      const code = String(currencyCode || 'GHS').toUpperCase();
+      const safe = Math.max(0, Number(amount || 0));
+      const whole = Math.floor(safe);
+      let cents = Math.round((safe - whole) * 100);
+      let adjustedWhole = whole;
+      if (cents === 100) {
+        adjustedWhole += 1;
+        cents = 0;
+      }
+
+      const major = code === 'USD' ? 'dollars' : 'cedis';
+      const minor = code === 'USD' ? 'cents' : 'pesewas';
+      if (cents > 0) {
+        return `${intToWords(adjustedWhole)} ${major} and ${intToWords(cents)} ${minor}`;
+      }
+      return `${intToWords(adjustedWhole)} ${major} only`;
+    }
+
+    function escapeHtml(text) {
+      return String(text || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    async function showPricingModal(accountData) {
+      const modal = document.getElementById('pricing-modal');
+      const title = document.getElementById('pricing-title');
+      const stateEl = document.getElementById('pricing-state');
+      const modeSelect = document.getElementById('pricing-mode');
+      const fixedBlock = document.getElementById('pricing-fixed-block');
+      const manualBlock = document.getElementById('pricing-manual-block');
+      const advancedToggle = document.getElementById('pricing-advanced-toggle');
+      const advancedSection = document.getElementById('pricing-advanced-section');
+      const currencySelect = document.getElementById('pricing-currency-code');
+      const rateBlock = document.getElementById('pricing-rate-block');
+      const manualRateInput = document.getElementById('pricing-manual-rate');
+      const noteInput = document.getElementById('pricing-conversion-note');
+      const historyWrap = document.getElementById('pricing-rate-history-wrap');
+      const historyBody = document.getElementById('pricing-rate-history');
+      const fixedPriceInput = document.getElementById('pricing-fixed-price');
+      const manualRowsBody = document.getElementById('pricing-manual-rows');
+      const countEl = document.getElementById('pricing-boe-count');
+      const totalEl = document.getElementById('pricing-total');
+      const selected = getSelectedReportParams();
+      const jobId = selected.jobId;
+      const fileKey = selected.fileKey;
+
+      const rows = Array.isArray(accountData.rows) ? accountData.rows : [];
+      title.textContent = `Pricing: ${accountData.name || ''}`;
+      countEl.textContent = rows.length;
+      totalEl.textContent = '0.00';
+      stateEl.textContent = '';
+      fixedPriceInput.value = '';
+      currencySelect.value = 'GHS';
+      manualRateInput.value = '';
+      noteInput.value = '';
+      modeSelect.value = 'none';
+      fixedBlock.style.display = 'none';
+      manualBlock.style.display = 'none';
+      advancedSection.style.display = 'none';
+      advancedToggle.setAttribute('aria-expanded', 'false');
+      historyWrap.style.display = 'none';
+      historyBody.innerHTML = '';
+
+      manualRowsBody.innerHTML = rows.map((row, idx) => {
+        const ref = escapeHtml(row.user_ref_raw || '');
+        const boe = escapeHtml(row.boe || '');
+        const lineKey = escapeHtml(String((row.source_idx !== undefined && row.source_idx !== null) ? row.source_idx : idx));
+        return `
+          <tr>
+            <td>${idx + 1}</td>
+            <td>${ref}</td>
+            <td>${boe}</td>
+            <td><input type="number" class="line-price" data-idx="${idx}" data-line-key="${lineKey}" min="0" step="0.01" value="0"></td>
+          </tr>
+        `;
+      }).join('');
+
+      const renderRateHistory = (historyItems) => {
+        const items = Array.isArray(historyItems) ? historyItems : [];
+        if (!items.length) {
+          historyWrap.style.display = 'none';
+          historyBody.innerHTML = '';
+          return;
+        }
+        historyWrap.style.display = 'block';
+        historyBody.innerHTML = items.map((item) => {
+          const mode = String(item.pricing_mode || 'none');
+          const label = mode === 'automatic' ? 'Automatic' : (mode === 'manual' ? 'Manual' : 'Without Amount');
+          const currency = String(item.currency_code || 'GHS').toUpperCase();
+          const rate = item.manual_rate ? ` | 1 USD = ${Number(item.manual_rate).toFixed(4)} GHS` : '';
+          const total = formatMoney(Number(item.report_total || 0), currency);
+          const when = String(item.created_at || '').replace('T', ' ').slice(0, 16);
+          const note = String(item.conversion_note || '').trim();
+          const safeNote = escapeHtml(note);
+          const copyBtn = note ? `<button type="button" class="pricing-history-copy" data-note="${safeNote}">Copy note</button>` : '';
+          return `<li><strong>${when}</strong> - ${label} - ${total}${rate}${note ? ` | ${safeNote}` : ''} ${copyBtn}</li>`;
+        }).join('');
+      };
+
+      const refreshModeVisibility = () => {
+        const mode = modeSelect.value;
+        fixedBlock.style.display = mode === 'automatic' ? 'block' : 'none';
+        manualBlock.style.display = mode === 'manual' ? 'block' : 'none';
+      };
+
+      const refreshAdvancedVisibility = () => {
+        const currencyCode = String(currencySelect.value || 'GHS').toUpperCase();
+        rateBlock.style.display = currencyCode === 'USD' ? 'block' : 'none';
+      };
+
+      modeSelect.onchange = refreshModeVisibility;
+      currencySelect.onchange = refreshAdvancedVisibility;
+      advancedToggle.onclick = () => {
+        const isOpen = advancedSection.style.display === 'block';
+        advancedSection.style.display = isOpen ? 'none' : 'block';
+        advancedToggle.setAttribute('aria-expanded', isOpen ? 'false' : 'true');
+      };
+
+      document.getElementById('pricing-calc-btn').onclick = () => {
+        const mode = modeSelect.value;
+        const currencyCode = String(currencySelect.value || 'GHS').toUpperCase();
+        let total = 0;
+        if (mode === 'automatic') {
+          total = normalizeMoney(fixedPriceInput.value) * rows.length;
+        } else if (mode === 'manual') {
+          const lineInputs = manualRowsBody.querySelectorAll('.line-price');
+          lineInputs.forEach(input => {
+            total += normalizeMoney(input.value);
+          });
+        }
+        totalEl.textContent = formatMoney(total, currencyCode);
+      };
+
+      document.getElementById('pricing-save-btn').onclick = async () => {
+        const mode = modeSelect.value;
+        const currencyCode = String(currencySelect.value || 'GHS').toUpperCase();
+        const manualRate = normalizeRate(manualRateInput.value);
+        if (mode !== 'none' && currencyCode === 'USD' && manualRate === null) {
+          stateEl.textContent = 'Manual rate is required when currency is USD.';
+          stateEl.className = 'pricing-state error';
+          return;
+        }
+        const payload = {
+          job_id: jobId,
+          file_key: fileKey,
+          account_name: accountData.name || '',
+          pricing_mode: mode,
+          fixed_price: normalizeMoney(fixedPriceInput.value),
+          currency_code: currencyCode,
+          manual_rate: manualRate,
+          conversion_note: String(noteInput.value || '').trim(),
+          line_prices: {},
+        };
+
+        if (mode === 'manual') {
+          const lineInputs = manualRowsBody.querySelectorAll('.line-price');
+          lineInputs.forEach(input => {
+            const lineKey = input.getAttribute('data-line-key') || '';
+            if (!lineKey) return;
+            payload.line_prices[lineKey] = normalizeMoney(input.value);
+          });
+        }
+
+        try {
+          const res = await fetch('/reports/account/pricing/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const result = await res.json();
+          if (!res.ok || !result.success) {
+            stateEl.textContent = result.error || 'Unable to save pricing';
+            stateEl.className = 'pricing-state error';
+            return;
+          }
+          stateEl.textContent = mode === 'none' ? 'Pricing cleared.' : 'Pricing saved.';
+          stateEl.className = 'pricing-state success';
+          if (result.rate_history) {
+            renderRateHistory(result.rate_history);
+          }
+          await loadAccountReport();
+        } catch (err) {
+          stateEl.textContent = 'Unable to save pricing';
+          stateEl.className = 'pricing-state error';
+        }
+      };
+
+      try {
+        const res = await fetch(`/reports/account/pricing?job_id=${encodeURIComponent(jobId)}&file_key=${encodeURIComponent(fileKey)}&account_name=${encodeURIComponent(accountData.name || '')}`);
+        const existing = await res.json();
+        if (res.ok && existing) {
+          modeSelect.value = existing.pricing_mode || 'none';
+          fixedPriceInput.value = String(existing.fixed_price || 0);
+          currencySelect.value = String(existing.currency_code || 'GHS').toUpperCase();
+          manualRateInput.value = existing.manual_rate !== null && existing.manual_rate !== undefined ? String(existing.manual_rate) : '';
+          noteInput.value = existing.conversion_note || '';
+
+          const linePrices = (existing.line_prices && typeof existing.line_prices === 'object') ? existing.line_prices : {};
+          manualRowsBody.querySelectorAll('.line-price').forEach(input => {
+            const lineKey = input.getAttribute('data-line-key') || '';
+            if (!lineKey) return;
+            const val = linePrices[lineKey];
+            input.value = Number.isFinite(Number(val)) ? String(val) : '0';
+          });
+
+          refreshModeVisibility();
+          refreshAdvancedVisibility();
+          renderRateHistory(existing.rate_history);
+        }
+      } catch (err) {
+        // Continue with default empty pricing state.
+      }
+
+      refreshModeVisibility();
+      refreshAdvancedVisibility();
+
+      modal.style.display = 'block';
+    }
+
     // Modal close handlers
     document.querySelector('.modal-close').addEventListener('click', () => {
       document.getElementById('assign-modal').style.display = 'none';
     });
 
     window.addEventListener('click', (event) => {
-      const modal = document.getElementById('assign-modal');
-      if (event.target === modal) {
-        modal.style.display = 'none';
+      const assignModal = document.getElementById('assign-modal');
+      const pricingModal = document.getElementById('pricing-modal');
+      if (event.target === assignModal) {
+        assignModal.style.display = 'none';
+      }
+      if (event.target === pricingModal) {
+        pricingModal.style.display = 'none';
       }
     });
 
@@ -889,7 +1996,105 @@
         console.error('Error assigning:', err);
       }
     });
+
+    // Use delegated handler so this still works even if modal markup is parsed later.
+    document.addEventListener('click', (event) => {
+      const target = event.target;
+      if (target && target.id === 'pricing-close') {
+        const pricingModal = document.getElementById('pricing-modal');
+        if (pricingModal) {
+          pricingModal.style.display = 'none';
+        }
+      }
+      if (target && target.classList && target.classList.contains('pricing-history-copy')) {
+        const note = String(target.getAttribute('data-note') || '').trim();
+        if (!note) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(note).then(() => {
+            const stateEl = document.getElementById('pricing-state');
+            if (stateEl) {
+              stateEl.textContent = 'Conversion note copied.';
+              stateEl.className = 'pricing-state success';
+            }
+          }).catch(() => {
+            alert('Could not copy note to clipboard.');
+          });
+        }
+      }
+    });
   </script>
   {% endif %}
+
+  <div id="pricing-modal" class="modal">
+    <div class="modal-content pricing-modal-content">
+      <span id="pricing-close" class="modal-close">&times;</span>
+      <h2 id="pricing-title">Pricing</h2>
+      <p class="subtle">BOE count: <strong id="pricing-boe-count">0</strong></p>
+
+      <div class="modal-controls">
+        <label for="pricing-mode">Pricing Mode</label>
+        <select id="pricing-mode">
+          <option value="none">Without Amount</option>
+          <option value="automatic">Automatic (fixed price x BOE count)</option>
+          <option value="manual">Manual (line-by-line)</option>
+        </select>
+      </div>
+
+      <div id="pricing-fixed-block" class="pricing-block" style="display:none;">
+        <label for="pricing-fixed-price">Fixed Price Per BOE</label>
+        <input type="number" id="pricing-fixed-price" min="0" step="0.01" placeholder="0.00">
+      </div>
+
+      <button id="pricing-advanced-toggle" class="btn btn-download pricing-advanced-toggle" type="button" aria-expanded="false">Advanced Currency Options</button>
+
+      <div id="pricing-advanced-section" class="pricing-block pricing-advanced-section" style="display:none;">
+        <div class="modal-controls">
+          <label for="pricing-currency-code">Currency</label>
+          <select id="pricing-currency-code">
+            <option value="GHS">GHS (Default)</option>
+            <option value="USD">USD (Advanced)</option>
+          </select>
+        </div>
+
+        <div id="pricing-rate-block" class="pricing-block" style="display:none;">
+          <label for="pricing-manual-rate">Manual Rate (GHS per 1 USD)</label>
+          <input type="number" id="pricing-manual-rate" min="0" step="0.0001" placeholder="e.g. 15.2500">
+        </div>
+
+        <div class="pricing-block">
+          <label for="pricing-conversion-note">Conversion Note (optional)</label>
+          <input type="text" id="pricing-conversion-note" placeholder="Saved on report/PDF for audit trail">
+        </div>
+
+        <div id="pricing-rate-history-wrap" class="pricing-history" style="display:none;">
+          <p class="subtle" style="margin:0 0 6px 0;"><strong>Saved Rate History</strong></p>
+          <ul id="pricing-rate-history"></ul>
+        </div>
+      </div>
+
+      <div id="pricing-manual-block" class="pricing-block" style="display:none;">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>User Ref</th>
+                <th>BOE</th>
+                <th>Amount</th>
+              </tr>
+            </thead>
+            <tbody id="pricing-manual-rows"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="pricing-actions">
+        <button id="pricing-calc-btn" class="btn btn-primary" type="button">Calculate</button>
+        <button id="pricing-save-btn" class="btn btn-primary" type="button">Save Pricing</button>
+        <div class="pricing-total">Total: <strong id="pricing-total">0.00</strong></div>
+      </div>
+      <div id="pricing-state" class="pricing-state"></div>
+    </div>
+  </div>
 </body>
 </html>

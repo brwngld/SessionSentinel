@@ -16,7 +16,15 @@ from helpers.data_processing import export_all_formats, scrape_headers
 from helpers.dialogs import handle_login_alert
 from helpers.login import login
 from helpers.logout import logout
-from helpers.navigation import go_to_clearance, go_to_search_boe, search_date_range
+from helpers.navigation import (
+    go_to_clearance,
+    go_to_declaration_report,
+    go_to_non_exited_boe,
+    go_to_search_boe,
+    search_date_range,
+    search_non_exited_boe_blocking,
+    search_non_exited_boe_status_by_date,
+)
 from helpers.pagination import scrape_boe_by_date, set_page_size
 from utils import capture_debug_state, log
 
@@ -33,6 +41,11 @@ def run_session(
     headless=False,
     status_callback=None,
     cancel_requested=None,
+    retrieval_type="financial",
+    elapsed_only=False,
+    customs_office_code="",
+    im_exporter_code="",
+    created_by="M",
 ):
     """Run the existing Selenium export workflow and return a result payload."""
 
@@ -125,9 +138,16 @@ def run_session(
                 "files": {},
             }
 
-        emit("Step 3/6: Navigating to BOE search")
-        go_to_clearance(driver)
-        go_to_search_boe(driver)
+        normalized_retrieval = str(retrieval_type or "financial").lower()
+
+        if normalized_retrieval in {"boe_blocking_current", "boe_status_dates"}:
+            emit("Step 3/6: Navigating to non-exited BOE")
+            go_to_clearance(driver)
+            go_to_non_exited_boe(driver)
+        else:
+            emit("Step 3/6: Navigating to BOE search")
+            go_to_clearance(driver)
+            go_to_search_boe(driver)
 
         if should_stop():
             return {
@@ -138,19 +158,55 @@ def run_session(
                 "files": {},
             }
 
-        emit("Step 4/6: Searching by date range")
-        search_ok = search_date_range(driver, start_date, end_date)
+        if normalized_retrieval == "boe_blocking_current":
+            emit("Step 4/6: Running BOE blocking search (Elapsed 60 Days)")
+        elif normalized_retrieval == "boe_status_dates":
+            emit("Step 4/6: Running BOE status search (Date range)")
+        else:
+            emit("Step 4/6: Searching by date range")
+        if normalized_retrieval == "boe_blocking_current":
+            search_ok = search_non_exited_boe_blocking(
+                driver,
+                start_date,
+                end_date,
+                elapsed_only=bool(elapsed_only),
+                customs_office_code=customs_office_code,
+                im_exporter_code=im_exporter_code,
+                created_by=created_by,
+            )
+        elif normalized_retrieval == "boe_status_dates":
+            search_ok = search_non_exited_boe_status_by_date(
+                driver,
+                start_date,
+                end_date,
+            )
+        else:
+            search_ok = search_date_range(driver, start_date, end_date)
         if not search_ok:
-            emit("Step 4/6: Search failed for selected date range")
+            if normalized_retrieval == "boe_blocking_current":
+                emit("Step 4/6: BOE blocking search failed")
+            elif normalized_retrieval == "boe_status_dates":
+                emit("Step 4/6: BOE status search failed")
+            else:
+                emit("Step 4/6: Search failed for selected date range")
             return {
                 "ok": False,
-                "message": "Search failed for selected date range",
+                "message": (
+                    "BOE blocking search failed"
+                    if normalized_retrieval == "boe_blocking_current"
+                    else (
+                        "BOE status search failed"
+                        if normalized_retrieval == "boe_status_dates"
+                        else "Search failed for selected date range"
+                    )
+                ),
                 "row_count": 0,
                 "files": {},
             }
 
         emit("Step 5/6: Scraping paginated rows")
-        set_page_size(driver, page_size)
+        if not set_page_size(driver, page_size):
+            emit("Step 5/6: Could not set requested page size; continuing with current page size")
         headers = scrape_headers(driver)
         data, stopped = scrape_boe_by_date(driver, should_stop=should_stop)
 

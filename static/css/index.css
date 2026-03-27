@@ -136,6 +136,158 @@
   gap: 12px;
 }
 
+.retrieval-tabs {
+  display: inline-flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.retrieval-tab-btn {
+  border: 1px solid #bfd0ee;
+  background: #eef3fb;
+  color: #17467d;
+  border-radius: 999px;
+  padding: 7px 13px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.retrieval-tab-btn.active {
+  background: #17467d;
+  color: #fff;
+  border-color: #17467d;
+}
+
+.retrieval-tab-panel {
+  display: none;
+}
+
+.retrieval-tab-panel.active {
+  display: block;
+}
+
+.results-tabs {
+  display: inline-flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.results-tab-btn {
+  border: 1px solid #bfd0ee;
+  background: #eef3fb;
+  color: #17467d;
+  border-radius: 999px;
+  padding: 7px 13px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.results-tab-btn:hover {
+  background: #d4def5;
+  border-color: #a0b8e1;
+}
+
+.results-tab-btn.active {
+  background: #17467d;
+  color: #fff;
+  border-color: #17467d;
+}
+
+.boe-status-grid {
+  align-items: end;
+}
+
+.boe-blocking-field {
+  border: 1px dashed #cdd9ec;
+  background: #f7faff;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.boe-range-field {
+  border: 1px dashed #cdd9ec;
+  background: #f7faff;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.boe-range-actions {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.boe-range-btn {
+  border: 1px solid #bfd0ee;
+  background: #eef3fb;
+  color: #17467d;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.boe-range-btn:hover {
+  background: #17467d;
+  color: #fff;
+  border-color: #17467d;
+}
+
+.checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #1d3557;
+  font-weight: 700;
+}
+
+.boe-status-actions {
+  margin-top: 12px;
+}
+
+.boe-status-action {
+  border-radius: 10px;
+  border: 1px solid #bfd0ee;
+  background: #eef3fb;
+  color: #17467d;
+  font-weight: 700;
+  padding: 9px 14px;
+  cursor: pointer;
+}
+
+.boe-status-action:hover {
+  background: #17467d;
+  color: #fff;
+  border-color: #17467d;
+}
+
+.boe-status-results {
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fbfdff;
+  padding: 10px;
+}
+
+.boe-status-results h3 {
+  margin: 0 0 10px;
+  font-size: 0.98rem;
+  color: #1d3557;
+}
+
+.boe-status-results-table th,
+.boe-status-results-table td {
+  font-size: 0.84rem;
+}
+
+.boe-status-placeholder-row td {
+  color: var(--muted);
+  font-style: italic;
+}
+
 .field {
   display: grid;
   gap: 6px;

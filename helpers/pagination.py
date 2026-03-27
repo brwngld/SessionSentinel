@@ -113,24 +113,70 @@ def set_page_size(driver, size=100, max_retries=3):
     retries = 0
     while retries < max_retries:
         try:
-            old_table = driver.find_element(By.CSS_SELECTOR, "table.g-table")
+            table_candidates = driver.find_elements(By.CSS_SELECTOR, "table.g-table")
+            old_table = table_candidates[0] if table_candidates else None
 
-            dropdown = WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "select.text_input.paging"))
-            )
-            select = Select(dropdown)
+            dropdown = None
+            dropdown_locators = [
+                (By.CSS_SELECTOR, "select.text_input.paging"),
+                (By.CSS_SELECTOR, "select.paging"),
+                (By.CSS_SELECTOR, "select[name*='page']"),
+                (By.CSS_SELECTOR, "select[id*='page']"),
+                (By.CSS_SELECTOR, ".g-page select"),
+                (By.CSS_SELECTOR, ".g-paging select"),
+            ]
 
-            # ✅ Check if requested size exists
-            options = [opt.text for opt in select.options]
-            if str(size) not in options:
-                log(f"Page size {size} not available. Options: {options}")
+            for by, selector in dropdown_locators:
+                elements = driver.find_elements(by, selector)
+                if elements:
+                    dropdown = elements[0]
+                    break
+
+            if dropdown is None:
+                log("Page size control not found on this screen")
                 return False
 
-            select.select_by_visible_text(str(size))
-            log(f"Set page size to {size}")
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", dropdown)
+            select = Select(dropdown)
 
-            # ✅ Wait until table refreshes
-            WebDriverWait(driver, 10).until(EC.staleness_of(old_table))
+            # Build flexible option map from visible text and value.
+            option_values = {}
+            for opt in select.options:
+                text_key = (opt.text or "").strip()
+                value_key = (opt.get_attribute("value") or "").strip()
+                if text_key:
+                    option_values[text_key] = value_key or text_key
+                if value_key:
+                    option_values[value_key] = value_key
+
+            requested = str(size).strip()
+            if requested not in option_values:
+                log(f"Page size {requested} not available on this screen")
+                return False
+
+            selected_value = option_values[requested]
+
+            # Try normal select API first.
+            try:
+                if requested in [opt.text.strip() for opt in select.options]:
+                    select.select_by_visible_text(requested)
+                else:
+                    select.select_by_value(selected_value)
+            except Exception:
+                # Fallback to JS change event for flaky custom controls.
+                driver.execute_script(
+                    "arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('change', { bubbles: true }));",
+                    dropdown,
+                    selected_value,
+                )
+
+            log(f"Set page size to {requested}")
+
+            if old_table is not None:
+                try:
+                    WebDriverWait(driver, 8).until(EC.staleness_of(old_table))
+                except TimeoutException:
+                    pass
             return True
 
         except StaleElementReferenceException:
@@ -138,7 +184,7 @@ def set_page_size(driver, size=100, max_retries=3):
             retries += 1
             continue
         except Exception as e:
-            log(f"Failed to set page size: {e}")
+            log(f"Failed to set page size ({type(e).__name__})")
             retries += 1
             continue
 

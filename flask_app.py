@@ -9,16 +9,17 @@ from io import BytesIO
 from io import StringIO
 
 import pandas as pd
-from fpdf import FPDF
-from flask import Flask, abort, flash, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, abort, current_app, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 from flask_login import LoginManager, UserMixin, current_user, login_required, login_user, logout_user
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.utils import secure_filename
 
 from automation_runner import run_session
 from config import (
     APP_ADMIN_PASSWORD_HASH,
     APP_ADMIN_USER,
     ALLOW_DEV_ADMIN_SETUP,
+    CREDENTIAL_ENCRYPTION_KEY,
     DEFAULT_END_DATE,
     DEFAULT_PAGE_SIZE,
     DEFAULT_START_DATE,
@@ -30,6 +31,7 @@ from config import (
     REMEMBER_ME_DAYS,
     LOGIN_LOCK_MINUTES,
     LOGIN_MAX_ATTEMPTS,
+    MANUAL_UPLOAD_RETENTION_DAYS,
     SESSION_COOKIE_SECURE,
     SESSION_TIMEOUT_MINUTES,
     PASSWORD_MAX_AGE_DAYS_ADMIN,
@@ -37,9 +39,9 @@ from config import (
     PASSWORD_EXPIRY_WARNING_DAYS,
 )
 from credential_store import (
+    CredentialDecryptionError,
     clear_failed_login,
     delete_app_user,
-    delete_account_alias_rule,
     get_account_alias_rules_for_user,
     delete_expired_generated_files,
     delete_expired_retrieval_runs,
@@ -55,18 +57,47 @@ from credential_store import (
     get_retrieval_run_for_user,
     list_recent_retrieval_runs_for_user,
     get_portal_credentials,
+    list_manual_upload_runs_for_user,
     init_db,
     list_app_users,
     log_auth_event,
     register_failed_login,
     save_generated_file,
     save_portal_credentials,
-    upsert_account_alias_rule,
     set_user_active,
     set_user_email,
     set_user_password,
     set_user_role,
+    set_manual_upload_pinned,
+    set_user_company_profile,
+    upsert_account_pricing_profile,
+    get_account_pricing_profile,
+    list_account_pricing_profiles_for_file,
+    list_account_pricing_rate_history,
+    record_account_pricing_rate_history,
+    delete_account_pricing_profile,
     upsert_retrieval_run,
+)
+from services.account_matching import (
+    build_account_report as service_build_account_report,
+    build_decision_ref_key as service_build_decision_ref_key,
+    resolve_account_columns as service_resolve_account_columns,
+)
+from services.account_export import (
+    build_all_accounts_pdf_bytes,
+    build_all_accounts_view_html,
+    build_account_pdf_bytes,
+    build_account_report_dataframe,
+    build_account_view_html,
+)
+from routes.reports_account_routes import build_reports_account_payload
+from routes.reports_account_routes import (
+    build_reports_account_assign_payload,
+    build_reports_account_custom_add_payload,
+    build_reports_account_custom_remove_payload,
+    build_reports_account_delete_payload,
+    build_reports_account_decision_payload,
+    build_reports_account_rename_payload,
 )
 
 app = Flask(__name__)
@@ -184,7 +215,7 @@ def _is_file_expired(file_path):
 
 def _cleanup_old_generated_files(owner_id):
     # Storage is DB-backed; cleanup is global and no longer tied to in-memory paths.
-    delete_expired_generated_files(FILE_RETENTION_HOURS)
+    delete_expired_generated_files(FILE_RETENTION_HOURS, MANUAL_UPLOAD_RETENTION_DAYS)
     delete_expired_retrieval_runs(RUN_RETENTION_DAYS)
 
 
@@ -208,6 +239,65 @@ def _password_max_age_days_for_role(role):
     if str(role or "").lower() == "admin":
         return max(1, int(PASSWORD_MAX_AGE_DAYS_ADMIN))
     return max(1, int(PASSWORD_MAX_AGE_DAYS_USER))
+
+
+def _looks_placeholder(value):
+    text = str(value or "").strip().lower()
+    if not text:
+        return True
+    markers = ("replace-", "change-this", "change-me", "placeholder")
+    return text.startswith(markers) or text in {"default", "test", "dummy"}
+
+
+def _security_config_warnings():
+    warnings = []
+
+    if _looks_placeholder(CREDENTIAL_ENCRYPTION_KEY):
+        warnings.append(
+            "Security warning: credential encryption key appears placeholder; saved portal credentials are not production-safe."
+        )
+
+    if _looks_placeholder(FLASK_SECRET_KEY) or len(str(FLASK_SECRET_KEY or "").strip()) < 32:
+        warnings.append("Security warning: Flask secret key appears weak or placeholder.")
+
+    if _looks_placeholder(APP_ADMIN_PASSWORD_HASH):
+        warnings.append("Security warning: admin password hash is still placeholder.")
+
+    return warnings
+
+
+def _flash_security_warnings(scope):
+    warnings = _security_config_warnings()
+    if not warnings:
+        return
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    seen = session.get("security_warning_seen")
+    if not isinstance(seen, dict):
+        seen = {}
+
+    for message in warnings:
+        key = f"{scope}:{message}"
+        if seen.get(key) == today:
+            continue
+        flash(message, "error")
+        seen[key] = today
+
+    session["security_warning_seen"] = seen
+
+
+def _get_portal_credentials_or_recover(user_id, flash_on_error=False):
+    try:
+        return get_portal_credentials(user_id)
+    except CredentialDecryptionError:
+        delete_portal_credentials(user_id)
+        log_auth_event(user_id, "portal_credentials_decrypt", "failed", _client_ip(), "invalid token; stale credentials removed")
+        if flash_on_error:
+            flash(
+                "Saved portal credentials could not be decrypted with the current key and were cleared. Please save credentials again.",
+                "error",
+            )
+        return None
 
 
 def _password_policy_state(user_record):
@@ -246,10 +336,84 @@ def _normalize_email(value):
     return email
 
 
+def _company_profile_from_user_record(user_record):
+    user_record = user_record or {}
+    return {
+        "name": str(user_record.get("company_name") or "").strip(),
+        "address": str(user_record.get("company_address") or "").strip(),
+        "phone": str(user_record.get("company_phone") or "").strip(),
+        "logo_path": str(user_record.get("company_logo_path") or "").strip(),
+    }
+
+
+def _normalize_pricing_profile(profile):
+    profile = profile or {}
+    mode = str(profile.get("pricing_mode") or "none").strip().lower()
+    if mode not in {"none", "automatic", "manual"}:
+        mode = "none"
+    try:
+        fixed_price = float(profile.get("fixed_price") or 0)
+    except (TypeError, ValueError):
+        fixed_price = 0.0
+    line_prices = profile.get("line_prices") if isinstance(profile.get("line_prices"), dict) else {}
+    currency_code = str(profile.get("currency_code") or "GHS").strip().upper()
+    if currency_code not in {"GHS", "USD"}:
+        currency_code = "GHS"
+    try:
+        manual_rate = float(profile.get("manual_rate")) if profile.get("manual_rate") is not None else None
+    except (TypeError, ValueError):
+        manual_rate = None
+    if manual_rate is not None and manual_rate <= 0:
+        manual_rate = None
+    conversion_note = str(profile.get("conversion_note") or "").strip()
+    return mode, max(0.0, fixed_price), line_prices, currency_code, manual_rate, conversion_note
+
+
+def _build_conversion_note(currency_code, manual_rate):
+    code = str(currency_code or "GHS").strip().upper()
+    if code == "USD" and manual_rate is not None and float(manual_rate) > 0:
+        return f"Converted with manual rate: 1 USD = {float(manual_rate):,.4f} GHS"
+    return ""
+
+
+def _resolve_line_amount(mode, fixed_price, line_prices, line_key):
+    if mode == "automatic":
+        return float(fixed_price)
+    if mode == "manual":
+        raw = line_prices.get(str(line_key), 0)
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
+
+def _calculate_account_amount_total(rows, pricing_profile):
+    mode, fixed_price, line_prices, _currency_code, _manual_rate, _conversion_note = _normalize_pricing_profile(pricing_profile)
+    if mode == "none":
+        return 0.0
+    total = 0.0
+    for row in rows or []:
+        line_key = str(row.get("source_idx") if row.get("source_idx") is not None else "")
+        total += _resolve_line_amount(mode, fixed_price, line_prices, line_key)
+    return float(total)
+
+
+def _build_priced_account_export_df(report_df):
+    export_df = report_df.copy()
+    if "_week_label" in export_df.columns:
+        export_df["Week"] = export_df["_week_label"]
+    ordered = [c for c in ["Week", "User Ref", "BOE Number", "Submission Date", "Amount"] if c in export_df.columns]
+    if not ordered:
+        ordered = [c for c in export_df.columns if not str(c).startswith("_")]
+    return export_df[ordered]
+
+
 def _build_report_file_index(user_id):
     runs = list_recent_retrieval_runs_for_user(user_id, limit=500)
     indexed = []
     for run in runs:
+        run_payload = run.get("payload") or {}
         files = ((run.get("result") or {}).get("files") or {})
         for key, file_data in files.items():
             if key not in {"csv", "xlsx"}:
@@ -261,9 +425,73 @@ def _build_report_file_index(user_id):
                     "file_name": (file_data or {}).get("name") if isinstance(file_data, dict) else str(file_data),
                     "created_at": (file_data or {}).get("created_at") if isinstance(file_data, dict) else run.get("created_at"),
                     "status": run.get("status"),
+                    "source": (run_payload.get("source") or "retrieval"),
+                    "pinned": bool(run_payload.get("pinned", False)),
+                    "retrieval_type": str(run_payload.get("retrieval_type") or "financial"),
                 }
             )
     return indexed
+
+
+@app.route("/reports/upload", methods=["POST"])
+@login_required
+def reports_upload():
+    _validate_csrf_or_abort()
+
+    uploaded = request.files.get("report_file")
+    if not uploaded or not (uploaded.filename or "").strip():
+        flash("Please choose a CSV or XLSX file to upload.", "error")
+        return redirect(url_for("reports_dashboard"))
+
+    original_name = secure_filename(uploaded.filename or "")
+    ext = os.path.splitext(original_name)[1].lower()
+    file_key_map = {".csv": "csv", ".xlsx": "xlsx"}
+    file_key = file_key_map.get(ext)
+    if not file_key:
+        flash("Unsupported file type. Please upload .csv or .xlsx.", "error")
+        return redirect(url_for("reports_dashboard"))
+
+    blob = uploaded.read()
+    if not blob:
+        flash("Uploaded file is empty.", "error")
+        return redirect(url_for("reports_dashboard"))
+
+    try:
+        if file_key == "csv":
+            try:
+                df = pd.read_csv(StringIO(blob.decode("utf-8")))
+            except UnicodeDecodeError:
+                df = pd.read_csv(StringIO(blob.decode("latin-1")))
+        else:
+            df = pd.read_excel(BytesIO(blob))
+    except Exception as exc:
+        flash(f"Could not read uploaded file: {exc}", "error")
+        return redirect(url_for("reports_dashboard"))
+
+    now_ts = datetime.now(timezone.utc).isoformat()
+    job_id = f"manual_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    upsert_retrieval_run(
+        job_id=job_id,
+        user_id=current_user.id,
+        status="completed",
+        last_message="Manual report upload",
+        row_count=int(len(df.index)),
+        created_at=now_ts,
+        ended_at=now_ts,
+        payload={"source": "manual_upload", "original_name": original_name, "pinned": False},
+    )
+    save_generated_file(
+        job_id=job_id,
+        user_id=current_user.id,
+        file_key=file_key,
+        file_name=original_name,
+        mime_type=uploaded.mimetype or ("text/csv" if file_key == "csv" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        file_blob=blob,
+        created_at=now_ts,
+    )
+
+    flash(f"Uploaded '{original_name}' successfully.", "success")
+    return redirect(url_for("reports_dashboard", job_id=job_id, file_key=file_key, page=1))
 
 
 def _load_dataframe_from_generated_file(file_record):
@@ -280,7 +508,7 @@ def _load_dataframe_from_generated_file(file_record):
     raise ValueError("Unsupported file type for dashboard")
 
 
-def _build_financial_dashboard(df, page=1, page_size=20):
+def _build_financial_dashboard(df, page=1, page_size=20, sort_by_due_date_desc=False):
     df = df.copy()
     df.columns = [str(col).strip() for col in df.columns]
 
@@ -298,7 +526,9 @@ def _build_financial_dashboard(df, page=1, page_size=20):
     code_col = pick_col(["IMP. CODE/EXP. CODE", "IMP CODE/EXP CODE", "Importer Code", "Exporter Code"])
     regime_col = pick_col(["Regime"])
     status_col = pick_col(["Status"])
+    processing_status_col = pick_col(["Processing Status", "ProcessingStatus"])
     date_col = pick_col(["Submission Date", "Submitted Date", "Date"])
+    due_date_col = pick_col(["Due Date", "BOE Due Date", "Boe Due Date"])
     created_by_col = pick_col(["Created By", "User", "Creator"])
 
     def non_blank_count(col):
@@ -361,6 +591,18 @@ def _build_financial_dashboard(df, page=1, page_size=20):
         )
         created_by_breakdown = [{"label": str(k), "count": int(v)} for k, v in creator_counts.items()]
 
+    boe_status_breakdown = []
+    if processing_status_col:
+        boe_status_counts = (
+            df[processing_status_col]
+            .astype(str)
+            .str.strip()
+            .replace("", "(Blank)")
+            .value_counts()
+            .head(10)
+        )
+        boe_status_breakdown = [{"label": str(k), "count": int(v)} for k, v in boe_status_counts.items()]
+
     timeline = []
     timeline_label = date_col or ""
     if date_col:
@@ -379,15 +621,42 @@ def _build_financial_dashboard(df, page=1, page_size=20):
             for _, row in grouped.iterrows()
         ]
 
+    boe_due_timeline = []
+    boe_due_timeline_label = due_date_col or ""
+    if due_date_col:
+        due_parsed = pd.to_datetime(df[due_date_col], errors="coerce", dayfirst=True)
+        due_grouped = (
+            pd.DataFrame({"date": due_parsed.dt.date})
+            .dropna(subset=["date"])
+            .groupby("date", as_index=False)
+            .size()
+            .rename(columns={"size": "count"})
+            .sort_values("date")
+            .tail(31)
+        )
+        boe_due_timeline = [
+            {"date": str(row["date"]), "count": int(row["count"])}
+            for _, row in due_grouped.iterrows()
+        ]
+
+    preview_source_df = df
+    if sort_by_due_date_desc and due_date_col:
+        due_sort = pd.to_datetime(df[due_date_col], errors="coerce", dayfirst=True)
+        preview_source_df = (
+            df.assign(_due_sort=due_sort)
+            .sort_values("_due_sort", ascending=True, na_position="last", kind="mergesort")
+            .drop(columns=["_due_sort"])
+        )
+
     allowed_page_sizes = {10, 20, 50, 100, 200, 500}
     page_size = int(page_size) if int(page_size) in allowed_page_sizes else 20
-    total_rows = int(len(df))
+    total_rows = int(len(preview_source_df))
     total_pages = max(1, (total_rows + page_size - 1) // page_size)
     page = max(1, min(int(page), total_pages))
     start_idx = (page - 1) * page_size
     end_idx = min(start_idx + page_size, total_rows)
 
-    preview_df = df.iloc[start_idx:end_idx].copy()
+    preview_df = preview_source_df.iloc[start_idx:end_idx].copy()
     
     # Convert columns to string, formatting numeric values as integers (no .0) and NaN to empty
     for col in preview_df.columns:
@@ -401,7 +670,7 @@ def _build_financial_dashboard(df, page=1, page_size=20):
             preview_df[col] = preview_df[col].where(pd.notna(preview_df[col]), "").astype(str)
     
     preview_rows = preview_df.to_dict(orient="records")
-    preview_columns = [str(c) for c in df.columns]  # Use full df columns for consistency
+    preview_columns = [str(c) for c in preview_source_df.columns]  # Use full columns for consistency
 
     return {
         "total_rows": total_rows,
@@ -415,8 +684,11 @@ def _build_financial_dashboard(df, page=1, page_size=20):
         "status_breakdown": status_breakdown,
         "regime_breakdown": regime_breakdown,
         "created_by_breakdown": created_by_breakdown,
+        "boe_status_breakdown": boe_status_breakdown,
         "timeline": timeline,
         "timeline_label": timeline_label,
+        "boe_due_timeline": boe_due_timeline,
+        "boe_due_timeline_label": boe_due_timeline_label,
         "known_columns_present": {
             "job_no": bool(job_col),
             "boe_no": bool(boe_col),
@@ -424,7 +696,9 @@ def _build_financial_dashboard(df, page=1, page_size=20):
             "imp_exp_code": bool(code_col),
             "regime": bool(regime_col),
             "status": bool(status_col),
+            "processing_status": bool(processing_status_col),
             "submission_date": bool(date_col),
+            "due_date": bool(due_date_col),
             "created_by": bool(created_by_col),
         },
         "non_blank_counts": {
@@ -560,315 +834,15 @@ def _normalize_user_ref_key(value):
 
 
 def _build_decision_ref_key(user_ref_raw="", imp_code="", created_by="", boe=""):
-    user_ref_key = _normalize_user_ref_key(user_ref_raw)
-    if user_ref_key:
-        return f"USR::{user_ref_key}"
-
-    imp_key = _normalize_user_ref_key(imp_code)
-    creator_key = _normalize_user_ref_key(created_by)
-    if imp_key or creator_key:
-        return f"CTX::{imp_key}::{creator_key}"
-
-    boe_key = _normalize_user_ref_key(boe)
-    if boe_key:
-        return f"BOE::{boe_key}"
-    return ""
+    return service_build_decision_ref_key(user_ref_raw, imp_code, created_by, boe)
 
 
 def _resolve_account_columns(df):
-    def pick_col(candidates):
-        lookup = {str(c).strip().lower(): c for c in df.columns}
-        for candidate in candidates:
-            col = lookup.get(str(candidate).strip().lower())
-            if col is not None:
-                return col
-        return None
-
-    # Try standard column name detection first.
-    boe_col = pick_col(["BoE No.", "BoE No", "BOE No.", "BOE No", "boe no.", "boe no"])
-    user_ref_col = pick_col(["User Ref. No", "User Ref No", "User Reference", "user ref. no", "user ref no", "userref.no", "userrefno"])
-    date_col = pick_col(["Submission Date", "Submitted Date", "Date"])
-    imp_code_col = pick_col(["IMP. CODE/EXP. CODE", "IMP CODE/EXP CODE", "IMP CODE", "EXP CODE", "Importer Code", "Exporter Code"])
-    created_by_col = pick_col(["Created By", "User", "Creator"])
-
-    # Fallback: Use column positions (Column 3 = BOE, Column 9 = User Ref, Column 10 = Date).
-    if not boe_col and len(df.columns) > 2:
-        boe_col = df.columns[2]
-    if not user_ref_col and len(df.columns) > 8:
-        user_ref_col = df.columns[8]
-    if not date_col and len(df.columns) > 9:
-        date_col = df.columns[9]
-    if not imp_code_col and len(df.columns) > 6:
-        imp_code_col = df.columns[6]
-    if not created_by_col and len(df.columns) > 11:
-        created_by_col = df.columns[11]
-
-    return boe_col, user_ref_col, date_col, imp_code_col, created_by_col
+    return service_resolve_account_columns(df)
 
 
 def _build_account_report(df, user_id=None):
-    """Build account grouping report based on User Ref No and BOE No"""
-    df = df.copy()
-    df.columns = [str(col).strip() for col in df.columns]
-
-    boe_col, user_ref_col, date_col, imp_code_col, created_by_col = _resolve_account_columns(df)
-
-    if not boe_col or not user_ref_col:
-        import sys
-        print(f"DEBUG: Missing columns. Available: {list(df.columns)}", file=sys.stderr)
-        print(f"DEBUG: BOE found: {boe_col}, User Ref found: {user_ref_col}", file=sys.stderr)
-        return {
-            "accounts": [],
-            "unassigned_count": 0,
-            "has_unassigned": False,
-            "total_entries": 0,
-            "error": f"Required columns not found. Available columns: {', '.join(df.columns[:10])}..."
-        }
-
-    # Create working dataframe from required fields and keep only rows with BOE values.
-    work_df = pd.DataFrame({
-        "source_idx": df.index,
-        "boe": df[boe_col].apply(_normalize_report_value),
-        "user_ref_raw": df[user_ref_col].apply(_normalize_report_value),
-        "date": df[date_col].apply(_normalize_report_value) if date_col else "",
-        "imp_code": df[imp_code_col].apply(_normalize_report_value) if imp_code_col else "",
-        "created_by": df[created_by_col].apply(_normalize_report_value) if created_by_col else "",
-    })
-    work_df = work_df[work_df["boe"] != ""].copy()
-    work_df["user_ref_key"] = work_df["user_ref_raw"].apply(_normalize_user_ref_key)
-    work_df["decision_ref_key"] = work_df.apply(
-        lambda row: _build_decision_ref_key(
-            row["user_ref_raw"],
-            row["imp_code"],
-            row["created_by"],
-            row["boe"],
-        ),
-        axis=1,
-    )
-
-    # Extract base account names with profile classification.
-    features = work_df["user_ref_raw"].apply(_extract_account_features)
-    work_df["account_base"] = features.apply(lambda x: x[0])
-    work_df["is_person_like"] = features.apply(lambda x: bool(x[1]))
-    work_df["created_by_base"] = work_df["created_by"].apply(lambda v: _extract_account_features(v)[0])
-
-    def _candidate_tokens(value):
-        text = _normalize_report_value(value).upper()
-        if not text:
-            return []
-        ignore_tokens = {
-            "IMP", "EXP", "IMPORT", "EXPORT", "USER", "REF", "NO", "NUM", "NUMBER", "LTD", "LIMITED",
-        }
-        out = []
-        for token in re.findall(r"[A-Z0-9]+", text):
-            if token.isdigit() or token in ignore_tokens:
-                continue
-            out.append(token)
-        return out
-
-    work_df["candidate_tokens"] = work_df["user_ref_raw"].apply(_candidate_tokens)
-
-    # Build non-person alias clusters algorithmically (no hardcoded account names).
-    non_person_labels = sorted({
-        label
-        for label in work_df.loc[~work_df["is_person_like"], "account_base"].tolist()
-        if label
-    })
-    clusters = []
-    for label in non_person_labels:
-        placed = False
-        for cluster in clusters:
-            if any(_is_code_alias(label, existing) for existing in cluster):
-                cluster.add(label)
-                placed = True
-                break
-        if not placed:
-            clusters.append(set([label]))
-
-    alias_map = {}
-    alias_reason_map = {}
-    alias_confidence_map = {}
-    for cluster in clusters:
-        canonical = sorted(cluster, key=lambda x: (len(x), x))[0]
-        for item in cluster:
-            alias_map[item] = canonical
-            _, reason, confidence = _code_alias_details(item, canonical)
-            alias_reason_map[item] = reason or "similar token"
-            alias_confidence_map[item] = float(confidence or 0.8)
-
-    def resolve_account(row):
-        base = row["account_base"]
-        if not base:
-            return "", "unassigned", 0.0
-        if row["is_person_like"]:
-            return base, "person surname rule", 1.0
-        canonical = alias_map.get(base, base)
-        return canonical, alias_reason_map.get(base, "exact token"), alias_confidence_map.get(base, 1.0)
-
-    resolved = work_df.apply(resolve_account, axis=1)
-    work_df["account"] = resolved.apply(lambda x: x[0])
-    work_df["account_reason"] = resolved.apply(lambda x: x[1])
-    work_df["account_confidence"] = resolved.apply(lambda x: float(x[2]))
-
-    # Use contextual hints from Created By and IMP Code for ambiguous refs.
-    def _apply_created_by_hint(row):
-        if row["is_person_like"]:
-            return row["account"], row["account_reason"], row["account_confidence"]
-        cb = row["created_by_base"]
-        if not cb:
-            return row["account"], row["account_reason"], row["account_confidence"]
-        candidates = row["candidate_tokens"] or []
-        if len(candidates) >= 2 and cb in candidates:
-            return cb, "created by token", 0.9
-        return row["account"], row["account_reason"], row["account_confidence"]
-
-    cb_adjusted = work_df.apply(_apply_created_by_hint, axis=1)
-    work_df["account"] = cb_adjusted.apply(lambda x: x[0])
-    work_df["account_reason"] = cb_adjusted.apply(lambda x: x[1])
-    work_df["account_confidence"] = cb_adjusted.apply(lambda x: float(x[2]))
-
-    # IMP code majority helps align inconsistent user refs and fill some blanks.
-    imp_majority = {}
-    reliable = work_df[(work_df["imp_code"] != "") & (work_df["account"] != "") & (work_df["account_confidence"] >= 0.9)]
-    if not reliable.empty:
-        for imp, group in reliable.groupby("imp_code"):
-            counts = group["account"].value_counts()
-            top_account = counts.index[0]
-            ratio = float(counts.iloc[0]) / float(counts.sum())
-            if counts.iloc[0] >= 2 and ratio >= 0.6:
-                imp_majority[imp] = top_account
-
-    def _apply_imp_hint(row):
-        imp = row["imp_code"]
-        if not imp or imp not in imp_majority:
-            return row["account"], row["account_reason"], row["account_confidence"]
-        dominant = imp_majority[imp]
-        candidates = row["candidate_tokens"] or []
-        if row["account"] == "":
-            return dominant, "imp code majority", 0.82
-        if len(candidates) >= 2 and dominant in candidates:
-            return dominant, "imp code consistency", 0.91
-        return row["account"], row["account_reason"], row["account_confidence"]
-
-    imp_adjusted = work_df.apply(_apply_imp_hint, axis=1)
-    work_df["account"] = imp_adjusted.apply(lambda x: x[0])
-    work_df["account_reason"] = imp_adjusted.apply(lambda x: x[1])
-    work_df["account_confidence"] = imp_adjusted.apply(lambda x: float(x[2]))
-
-    # Apply persisted user decisions to override algorithmic suggestions.
-    if user_id:
-        persisted_rules = {
-            row.get("ref_key", ""): row
-            for row in get_account_alias_rules_for_user(user_id)
-            if row.get("ref_key")
-        }
-
-        def apply_persisted(row):
-            rule = persisted_rules.get(row["decision_ref_key"])
-            if not rule:
-                return row["account"], row["account_reason"], row["account_confidence"]
-            canonical = _normalize_report_value(rule.get("canonical_account"))
-            decision = _normalize_report_value(rule.get("decision_type")) or "accept"
-            if decision == "unassign" or canonical == "__UNASSIGNED__":
-                return "", "user decision (unassign)", 1.0
-            if not canonical:
-                return row["account"], row["account_reason"], row["account_confidence"]
-            return canonical, f"user decision ({decision})", 1.0
-
-        persisted = work_df.apply(apply_persisted, axis=1)
-        work_df["account"] = persisted.apply(lambda x: x[0])
-        work_df["account_reason"] = persisted.apply(lambda x: x[1])
-        work_df["account_confidence"] = persisted.apply(lambda x: float(x[2]))
-
-    # Separate assigned and unassigned
-    assigned_df = work_df[work_df["account"] != ""].copy()
-    unassigned_df = work_df[work_df["account"] == ""].copy()
-
-    # Group assigned by account base name
-    accounts = []
-    for account_name in sorted(assigned_df["account"].unique()):
-        account_data = assigned_df[assigned_df["account"] == account_name]
-        # Convert to native Python types for JSON serialization
-        rows_list = []
-        for _, row in account_data[["source_idx", "boe", "user_ref_raw", "date", "imp_code", "created_by", "account_reason", "account_confidence"]].iterrows():
-            rows_list.append({
-                "source_idx": int(row["source_idx"]),
-                "boe": str(row["boe"]) if str(row["boe"]).strip() else None,
-                "user_ref_raw": str(row["user_ref_raw"]) if str(row["user_ref_raw"]).strip() else None,
-                "date": str(row["date"]) if str(row["date"]).strip() else None,
-                "imp_code": str(row["imp_code"]) if str(row["imp_code"]).strip() else None,
-                "created_by": str(row["created_by"]) if str(row["created_by"]).strip() else None,
-                "match_reason": str(row["account_reason"]),
-                "match_confidence": float(row["account_confidence"]),
-            })
-        
-        accounts.append({
-            "name": str(account_name),
-            "count": int(len(account_data)),
-            "rows": rows_list,
-            "match_reasons": sorted(set(account_data["account_reason"].tolist())),
-            "low_confidence_count": int((account_data["account_confidence"] < 0.86).sum()),
-        })
-
-    # Convert unassigned rows to native Python types
-    unassigned_rows_list = []
-    for _, row in unassigned_df[["source_idx", "boe", "user_ref_raw", "date", "imp_code", "created_by"]].iterrows():
-        unassigned_rows_list.append({
-            "source_idx": int(row["source_idx"]),
-            "boe": str(row["boe"]) if str(row["boe"]).strip() else None,
-            "user_ref_raw": str(row["user_ref_raw"]) if str(row["user_ref_raw"]).strip() else None,
-            "date": str(row["date"]) if str(row["date"]).strip() else None,
-            "imp_code": str(row["imp_code"]) if str(row["imp_code"]).strip() else None,
-            "created_by": str(row["created_by"]) if str(row["created_by"]).strip() else None,
-        })
-
-    uncertain_df = assigned_df[
-        (~assigned_df["is_person_like"]) & (assigned_df["account_confidence"] < 0.86)
-    ].copy()
-    uncertain_matches = []
-    for _, row in uncertain_df[["user_ref_raw", "user_ref_key", "decision_ref_key", "account", "account_reason", "account_confidence", "boe", "date", "imp_code", "created_by"]].iterrows():
-        uncertain_matches.append(
-            {
-                "raw_user_ref": str(row["user_ref_raw"]),
-                "ref_key": str(row["user_ref_key"]),
-                "decision_ref_key": str(row["decision_ref_key"]),
-                "suggested_account": str(row["account"]),
-                "reason": str(row["account_reason"]),
-                "confidence": float(row["account_confidence"]),
-                "boe": str(row["boe"]),
-                "date": str(row["date"]),
-                "imp_code": str(row["imp_code"]),
-                "created_by": str(row["created_by"]),
-            }
-        )
-
-    assigned_rows_list = []
-    for _, row in assigned_df[["source_idx", "boe", "user_ref_raw", "date", "imp_code", "created_by", "decision_ref_key", "account", "account_reason", "account_confidence"]].head(300).iterrows():
-        assigned_rows_list.append(
-            {
-                "source_idx": int(row["source_idx"]),
-                "boe": str(row["boe"]),
-                "user_ref_raw": str(row["user_ref_raw"]),
-                "date": str(row["date"]),
-                "imp_code": str(row["imp_code"]),
-                "created_by": str(row["created_by"]),
-                "decision_ref_key": str(row["decision_ref_key"]),
-                "current_account": str(row["account"]),
-                "reason": str(row["account_reason"]),
-                "confidence": float(row["account_confidence"]),
-            }
-        )
-
-    return {
-        "accounts": accounts,
-        "unassigned_count": int(len(unassigned_df)),
-        "unassigned_rows": unassigned_rows_list,
-        "has_unassigned": bool(len(unassigned_df) > 0),
-        "total_entries": int(len(work_df)),
-        "uncertain_count": int(len(uncertain_matches)),
-        "uncertain_matches": uncertain_matches,
-        "assigned_rows": assigned_rows_list,
-    }
+    return service_build_account_report(df, user_id=user_id)
 
 
 @app.before_request
@@ -927,6 +901,7 @@ def _find_duplicate_active_job(owner_id, payload_signature):
 
             existing_payload = existing_job.get("payload") or {}
             existing_signature = {
+                "retrieval_type": str(existing_payload.get("retrieval_type", "financial")),
                 "start_date": existing_payload.get("start_date", ""),
                 "end_date": existing_payload.get("end_date", ""),
                 "page_size": str(existing_payload.get("page_size", "")),
@@ -955,11 +930,17 @@ def _enqueue_job(payload):
             "status": "queued",
             "created_at": datetime.now().isoformat(),
             "payload": {
+                "retrieval_type": payload.get("retrieval_type", "financial"),
                 "start_date": payload.get("start_date"),
                 "end_date": payload.get("end_date"),
                 "page_size": payload.get("page_size"),
                 "output_dir": payload.get("output_dir"),
                 "headless": payload.get("headless", False),
+                "label": payload.get("label"),
+                "elapsed_only": payload.get("elapsed_only", False),
+                "customs_office_code": payload.get("customs_office_code", ""),
+                "im_exporter_code": payload.get("im_exporter_code", ""),
+                "created_by": payload.get("created_by", "M"),
             },
             "last_message": "Step 0/6: Queued",
             "result": None,
@@ -974,12 +955,17 @@ def _enqueue_job(payload):
         row_count=0,
         created_at=datetime.now(timezone.utc).isoformat(),
         payload={
+            "retrieval_type": payload.get("retrieval_type", "financial"),
             "start_date": payload.get("start_date"),
             "end_date": payload.get("end_date"),
             "page_size": payload.get("page_size"),
             "output_dir": payload.get("output_dir"),
             "headless": payload.get("headless", False),
             "label": payload.get("label"),
+            "elapsed_only": payload.get("elapsed_only", False),
+            "customs_office_code": payload.get("customs_office_code", ""),
+            "im_exporter_code": payload.get("im_exporter_code", ""),
+            "created_by": payload.get("created_by", "M"),
         },
     )
 
@@ -999,12 +985,17 @@ def _run_background_job(job_id, payload):
         row_count=0,
         created_at=created_at,
         payload={
+            "retrieval_type": payload.get("retrieval_type", "financial"),
             "start_date": payload.get("start_date"),
             "end_date": payload.get("end_date"),
             "page_size": payload.get("page_size"),
             "output_dir": payload.get("output_dir"),
             "headless": payload.get("headless", False),
             "label": payload.get("label"),
+            "elapsed_only": payload.get("elapsed_only", False),
+            "customs_office_code": payload.get("customs_office_code", ""),
+            "im_exporter_code": payload.get("im_exporter_code", ""),
+            "created_by": payload.get("created_by", "M"),
         },
     )
 
@@ -1021,6 +1012,11 @@ def _run_background_job(job_id, payload):
         output_dir=payload.get("output_dir") or OUTPUT_DIR,
         edge_driver_path=payload.get("edge_driver_path") or EDGE_DRIVER_PATH,
         headless=payload.get("headless", False),
+        retrieval_type=payload.get("retrieval_type", "financial"),
+        elapsed_only=payload.get("elapsed_only", False),
+        customs_office_code=payload.get("customs_office_code", ""),
+        im_exporter_code=payload.get("im_exporter_code", ""),
+        created_by=payload.get("created_by", "M"),
         status_callback=emit_status,
         cancel_requested=lambda: bool(payload.get("cancel_event") and payload["cancel_event"].is_set()),
     )
@@ -1074,12 +1070,17 @@ def _run_background_job(job_id, payload):
         created_at=created_at,
         ended_at=ended_at,
         payload={
+            "retrieval_type": payload.get("retrieval_type", "financial"),
             "start_date": payload.get("start_date"),
             "end_date": payload.get("end_date"),
             "page_size": payload.get("page_size"),
             "output_dir": payload.get("output_dir"),
             "headless": payload.get("headless", False),
             "label": payload.get("label"),
+            "elapsed_only": payload.get("elapsed_only", False),
+            "customs_office_code": payload.get("customs_office_code", ""),
+            "im_exporter_code": payload.get("im_exporter_code", ""),
+            "created_by": payload.get("created_by", "M"),
         },
     )
 
@@ -1091,6 +1092,8 @@ def _run_background_job(job_id, payload):
 def login():
     if current_user.is_authenticated:
         return redirect(url_for("index"))
+
+    _flash_security_warnings("login")
 
     if request.method == "POST":
         _validate_csrf_or_abort()
@@ -1214,6 +1217,7 @@ def logout():
 @app.route("/", methods=["GET"])
 @login_required
 def index():
+    _flash_security_warnings("dashboard")
     _cleanup_old_generated_files(current_user.id)
 
     persisted_runs = list_recent_retrieval_runs_for_user(current_user.id, limit=200)
@@ -1225,7 +1229,7 @@ def index():
         jobs_by_id[job["id"]] = job
     jobs_snapshot = sorted(jobs_by_id.values(), key=lambda item: item.get("created_at", ""), reverse=True)
 
-    saved_credentials = get_portal_credentials(current_user.id)
+    saved_credentials = _get_portal_credentials_or_recover(current_user.id, flash_on_error=True)
     return render_template(
         "index.html",
         defaults={
@@ -1256,8 +1260,67 @@ def profile():
         is_admin=getattr(current_user, "is_admin", False),
         current_role=getattr(current_user, "role", "user"),
         password_policy=policy,
+        company_profile=_company_profile_from_user_record(user_record),
         csrf_token=_new_csrf_token(),
     )
+
+
+@app.route("/profile/company", methods=["POST"])
+@login_required
+def profile_company_update():
+    _validate_csrf_or_abort()
+
+    company_name = request.form.get("company_name", "")
+    company_address = request.form.get("company_address", "")
+    company_phone = request.form.get("company_phone", "")
+
+    user_record = get_app_user(current_user.id) or {}
+    current_logo_path = str(user_record.get("company_logo_path") or "").strip()
+    clear_logo = request.form.get("clear_company_logo", "").strip().lower() in {"1", "true", "yes", "on"}
+    uploaded_logo = request.files.get("company_logo")
+
+    new_logo_path = current_logo_path
+    if clear_logo:
+        if current_logo_path:
+            old_logo_abs = os.path.join(app.root_path, current_logo_path)
+            if os.path.exists(old_logo_abs):
+                try:
+                    os.remove(old_logo_abs)
+                except OSError:
+                    pass
+        new_logo_path = ""
+
+    if uploaded_logo and (uploaded_logo.filename or "").strip():
+        original_name = secure_filename(uploaded_logo.filename or "")
+        ext = os.path.splitext(original_name)[1].lower()
+        if ext not in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+            flash("Logo must be PNG, JPG, JPEG, GIF, or WEBP.", "error")
+            return redirect(url_for("profile"))
+
+        logo_dir = os.path.join(app.root_path, "static", "uploads", "company_logos")
+        os.makedirs(logo_dir, exist_ok=True)
+        logo_file = f"{current_user.id}_{datetime.now().strftime('%Y%m%d%H%M%S')}{ext}"
+        logo_abs = os.path.join(logo_dir, logo_file)
+        uploaded_logo.save(logo_abs)
+        new_logo_path = os.path.join("static", "uploads", "company_logos", logo_file).replace("\\", "/")
+
+        if current_logo_path and current_logo_path != new_logo_path:
+            old_logo_abs = os.path.join(app.root_path, current_logo_path)
+            if os.path.exists(old_logo_abs):
+                try:
+                    os.remove(old_logo_abs)
+                except OSError:
+                    pass
+
+    set_user_company_profile(
+        current_user.id,
+        company_name=company_name,
+        company_address=company_address,
+        company_phone=company_phone,
+        company_logo_path=new_logo_path,
+    )
+    flash("Company profile updated.", "success")
+    return redirect(url_for("profile"))
 
 
 @app.route("/password-required", methods=["GET"])
@@ -1304,7 +1367,22 @@ def reports_dashboard():
 
     selected_summary = None
     selected_file_name = ""
+    selected_retrieval_type = "financial"
+    sort_by_due_date_desc = False
+    recent_uploads = list_manual_upload_runs_for_user(current_user.id, limit=30)
     if selected_job_id and selected_file_key in {"csv", "xlsx"}:
+        selected_meta = next(
+            (
+                item
+                for item in report_files
+                if str(item.get("job_id")) == selected_job_id and str(item.get("file_key")) == selected_file_key
+            ),
+            None,
+        )
+        if selected_meta:
+            selected_retrieval_type = str(selected_meta.get("retrieval_type") or "financial")
+            sort_by_due_date_desc = selected_retrieval_type == "boe_status_dates"
+
         record = get_generated_file(current_user.id, selected_job_id, selected_file_key)
         if record:
             try:
@@ -1313,6 +1391,7 @@ def reports_dashboard():
                     df,
                     page=selected_page,
                     page_size=selected_page_size,
+                    sort_by_due_date_desc=sort_by_due_date_desc,
                 )
                 selected_file_name = record.get("file_name") or ""
             except Exception as exc:
@@ -1326,11 +1405,61 @@ def reports_dashboard():
         selected_page=selected_page,
         selected_page_size=selected_page_size,
         selected_file_name=selected_file_name,
+        selected_retrieval_type=selected_retrieval_type,
         summary=selected_summary,
+        recent_uploads=recent_uploads,
+        manual_upload_retention_days=MANUAL_UPLOAD_RETENTION_DAYS,
         is_admin=getattr(current_user, "is_admin", False),
         current_role=getattr(current_user, "role", "user"),
         csrf_token=_new_csrf_token(),
     )
+
+
+@app.route("/reports/upload/pin", methods=["POST"])
+@login_required
+def reports_upload_pin_toggle():
+    _validate_csrf_or_abort()
+
+    job_id = _normalize_report_value(request.form.get("job_id"))
+    file_key = _normalize_report_value(request.form.get("file_key")).lower()
+    if file_key not in {"csv", "xlsx"}:
+        file_key = "csv"
+    pin_value = _normalize_report_value(request.form.get("pin")).lower()
+    should_pin = pin_value in {"1", "true", "yes", "on"}
+
+    if not job_id:
+        flash("Missing upload identifier.", "error")
+        return redirect(url_for("reports_dashboard"))
+
+    updated = set_manual_upload_pinned(current_user.id, job_id, should_pin)
+    if not updated:
+        flash("Upload not found or not eligible for pinning.", "error")
+        return redirect(url_for("reports_dashboard"))
+
+    flash("Upload pinned." if should_pin else "Upload unpinned.", "success")
+    return redirect(url_for("reports_dashboard", job_id=job_id, file_key=file_key, page=1))
+
+
+@app.route("/reports/upload/delete", methods=["POST"])
+@login_required
+def reports_upload_delete():
+    _validate_csrf_or_abort()
+
+    job_id = _normalize_report_value(request.form.get("job_id"))
+    if not job_id:
+        flash("Missing upload identifier.", "error")
+        return redirect(url_for("reports_dashboard"))
+
+    runs = list_manual_upload_runs_for_user(current_user.id, limit=500)
+    exists = any(str(item.get("job_id")) == job_id for item in runs)
+    if not exists:
+        flash("Upload not found.", "error")
+        return redirect(url_for("reports_dashboard"))
+
+    deleted_files = delete_generated_files_for_job(current_user.id, job_id)
+    delete_retrieval_run(current_user.id, job_id)
+    flash(f"Upload deleted ({deleted_files} file entries removed).", "success")
+    return redirect(url_for("reports_dashboard"))
 
 
 @app.route("/reports/preview", methods=["GET"])
@@ -1358,9 +1487,18 @@ def reports_preview_ajax():
     if not record:
         return jsonify({"error": "File not found"}), 404
 
+    run = get_retrieval_run_for_user(current_user.id, selected_job_id) or {}
+    retrieval_type = str(((run.get("payload") or {}).get("retrieval_type") or "financial"))
+    sort_by_due_date_desc = retrieval_type == "boe_status_dates"
+
     try:
         df = _load_dataframe_from_generated_file(record)
-        summary = _build_financial_dashboard(df, page=selected_page, page_size=selected_page_size)
+        summary = _build_financial_dashboard(
+            df,
+            page=selected_page,
+            page_size=selected_page_size,
+            sort_by_due_date_desc=sort_by_due_date_desc,
+        )
         return jsonify({
             "preview_columns": summary["preview_columns"],
             "preview_rows": summary["preview_rows"],
@@ -1378,30 +1516,180 @@ def reports_preview_ajax():
 @app.route("/reports/account", methods=["GET"])
 @login_required
 def reports_account_ajax():
-    """AJAX endpoint to fetch account grouping report."""
-    import sys
     selected_job_id = request.args.get("job_id", "").strip()
     selected_file_key = request.args.get("file_key", "").strip().lower()
+    payload, status = build_reports_account_payload(
+        current_user.id,
+        selected_job_id,
+        selected_file_key,
+        get_generated_file=get_generated_file,
+        load_dataframe=_load_dataframe_from_generated_file,
+    )
+    if status == 200 and isinstance(payload, dict):
+        pricing_by_account = list_account_pricing_profiles_for_file(
+            current_user.id,
+            selected_job_id,
+            selected_file_key,
+        )
+        total_amount = 0.0
+        for account in payload.get("accounts", []):
+            account_name = str(account.get("name") or "")
+            profile = pricing_by_account.get(account_name, {})
+            mode, fixed_price, _line_prices, currency_code, manual_rate, conversion_note = _normalize_pricing_profile(profile)
+            amount_total = _calculate_account_amount_total(account.get("rows", []), profile)
+            account["pricing_mode"] = mode
+            account["fixed_price"] = float(fixed_price)
+            account["currency_code"] = currency_code
+            account["manual_rate"] = manual_rate
+            account["conversion_note"] = conversion_note
+            account["amount_total"] = float(amount_total)
+            total_amount += float(amount_total)
+        payload["amount_report_total"] = float(total_amount)
+        payload["amount_report_accounts_with_amount"] = int(
+            sum(1 for a in payload.get("accounts", []) if float(a.get("amount_total") or 0) > 0)
+        )
 
-    if not selected_job_id or not selected_file_key or selected_file_key not in {"csv", "xlsx"}:
+    if status == 500 and payload.get("traceback"):
+        current_app.logger.error("Account report ajax failed\n%s", payload.get("traceback"))
+        payload = {"error": payload.get("error", "Internal error")}
+    return jsonify(payload), status
+
+
+@app.route("/reports/account/custom/add", methods=["POST"])
+@login_required
+def reports_account_custom_add():
+    payload = request.get_json(silent=True) or {}
+    account_name = _normalize_report_value(payload.get("account_name"))
+    response, status = build_reports_account_custom_add_payload(current_user.id, account_name)
+    return jsonify(response), status
+
+
+@app.route("/reports/account/custom/remove", methods=["POST"])
+@login_required
+def reports_account_custom_remove():
+    payload = request.get_json(silent=True) or {}
+    account_name = _normalize_report_value(payload.get("account_name"))
+    response, status = build_reports_account_custom_remove_payload(current_user.id, account_name)
+    return jsonify(response), status
+
+
+@app.route("/reports/account/pricing", methods=["GET"])
+@login_required
+def reports_account_pricing_get():
+    selected_job_id = request.args.get("job_id", "").strip()
+    selected_file_key = request.args.get("file_key", "").strip().lower()
+    account_name = _normalize_report_value(request.args.get("account_name"))
+
+    if not selected_job_id or selected_file_key not in {"csv", "xlsx"} or not account_name:
         return jsonify({"error": "Invalid parameters"}), 400
 
-    record = get_generated_file(current_user.id, selected_job_id, selected_file_key)
-    if not record:
-        return jsonify({"error": "File not found"}), 404
+    profile = get_account_pricing_profile(current_user.id, selected_job_id, selected_file_key, account_name)
+    if not profile:
+        return jsonify({"pricing_mode": "none", "fixed_price": 0, "line_prices": {}, "currency_code": "GHS", "manual_rate": None, "conversion_note": "", "rate_history": []})
+    profile["rate_history"] = list_account_pricing_rate_history(
+        current_user.id,
+        selected_job_id,
+        selected_file_key,
+        account_name,
+    )
+    return jsonify(profile)
 
+
+@app.route("/reports/account/pricing/save", methods=["POST"])
+@login_required
+def reports_account_pricing_save():
+    payload = request.get_json(silent=True) or {}
+    selected_job_id = _normalize_report_value(payload.get("job_id"))
+    selected_file_key = _normalize_report_value(payload.get("file_key")).lower()
+    account_name = _normalize_report_value(payload.get("account_name"))
+    pricing_mode = _normalize_report_value(payload.get("pricing_mode")).lower() or "none"
+    fixed_price = payload.get("fixed_price", 0)
+    line_prices = payload.get("line_prices")
+    currency_code = _normalize_report_value(payload.get("currency_code")).upper() or "GHS"
+    manual_rate = payload.get("manual_rate")
+    conversion_note = _normalize_report_value(payload.get("conversion_note"))
+
+    if not selected_job_id or selected_file_key not in {"csv", "xlsx"} or not account_name:
+        return jsonify({"error": "Invalid parameters"}), 400
+
+    if currency_code not in {"GHS", "USD"}:
+        currency_code = "GHS"
     try:
-        df = _load_dataframe_from_generated_file(record)
-        print(f"DEBUG: Loaded dataframe with shape {df.shape}, columns: {list(df.columns)}", file=sys.stderr)
-        account_report = _build_account_report(df, user_id=current_user.id)
-        print(f"DEBUG: Account report generated: {len(account_report.get('accounts', []))} accounts", file=sys.stderr)
-        return jsonify(account_report)
-    except Exception as e:
-        import traceback
-        error_msg = str(e)
-        traceback_str = traceback.format_exc()
-        print(f"ERROR in account report: {error_msg}\n{traceback_str}", file=sys.stderr)
-        return jsonify({"error": f"Error: {error_msg}"}), 500
+        parsed_manual_rate = float(manual_rate) if manual_rate is not None and str(manual_rate).strip() != "" else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "Manual rate must be a valid number"}), 400
+    if parsed_manual_rate is not None and parsed_manual_rate <= 0:
+        return jsonify({"error": "Manual rate must be greater than 0"}), 400
+
+    if pricing_mode in {"automatic", "manual"} and currency_code == "USD" and parsed_manual_rate is None:
+        return jsonify({"error": "Manual rate is required for USD pricing"}), 400
+
+    if currency_code == "USD":
+        conversion_note = conversion_note or _build_conversion_note(currency_code, parsed_manual_rate)
+    else:
+        conversion_note = ""
+
+    if pricing_mode == "none":
+        delete_account_pricing_profile(current_user.id, selected_job_id, selected_file_key, account_name)
+        return jsonify({"success": True, "deleted": True})
+
+    upsert_account_pricing_profile(
+        current_user.id,
+        selected_job_id,
+        selected_file_key,
+        account_name,
+        pricing_mode=pricing_mode,
+        fixed_price=fixed_price,
+        line_prices=line_prices,
+        currency_code=currency_code,
+        manual_rate=parsed_manual_rate,
+        conversion_note=conversion_note,
+    )
+
+    report_total = 0.0
+    try:
+        record = get_generated_file(current_user.id, selected_job_id, selected_file_key)
+        if record:
+            df = _load_dataframe_from_generated_file(record)
+            account_report = _build_account_report(df, user_id=current_user.id)
+            target = next((acc for acc in account_report.get("accounts", []) if str(acc.get("name") or "") == account_name), None)
+            if target:
+                report_total = _calculate_account_amount_total(
+                    target.get("rows", []),
+                    {
+                        "pricing_mode": pricing_mode,
+                        "fixed_price": fixed_price,
+                        "line_prices": line_prices,
+                        "currency_code": currency_code,
+                        "manual_rate": parsed_manual_rate,
+                        "conversion_note": conversion_note,
+                    },
+                )
+    except Exception:
+        current_app.logger.exception("Could not compute pricing history total", extra={"account_name": account_name})
+
+    record_account_pricing_rate_history(
+        current_user.id,
+        selected_job_id,
+        selected_file_key,
+        account_name,
+        pricing_mode,
+        currency_code,
+        parsed_manual_rate,
+        conversion_note,
+        report_total,
+    )
+    return jsonify(
+        {
+            "success": True,
+            "rate_history": list_account_pricing_rate_history(
+                current_user.id,
+                selected_job_id,
+                selected_file_key,
+                account_name,
+            ),
+        }
+    )
 
 
 @app.route("/reports/account/download/<account_name>", methods=["GET"])
@@ -1421,6 +1709,7 @@ def reports_account_download(account_name):
     try:
         df = _load_dataframe_from_generated_file(record)
         account_report = _build_account_report(df, user_id=current_user.id)
+        company_profile = _company_profile_from_user_record(get_app_user(current_user.id))
         
         # Find matching account and filter rows
         account_data = None
@@ -1431,73 +1720,28 @@ def reports_account_download(account_name):
         
         if not account_data:
             abort(404)
-
-        # Rebuild filtered dataframe with original row indexes to avoid BOE formatting mismatches.
-        source_indexes = [int(row["source_idx"]) for row in account_data["rows"] if row.get("source_idx") is not None]
-        filtered_df = df.loc[df.index.isin(source_indexes)].copy()
-
-        boe_col, user_ref_col, date_col, _imp_code_col, _created_by_col = _resolve_account_columns(filtered_df)
-        if not boe_col or not user_ref_col:
-            abort(500)
-
-        report_df = pd.DataFrame(
-            {
-                "User Ref": filtered_df[user_ref_col].apply(_normalize_report_value),
-                "BOE Number": filtered_df[boe_col].apply(_normalize_report_value),
-                "Submission Date": filtered_df[date_col].apply(_normalize_report_value) if date_col else "",
-            }
+        pricing_profile = get_account_pricing_profile(
+            current_user.id,
+            selected_job_id,
+            selected_file_key,
+            account_name,
         )
-
-        parsed_dates = pd.to_datetime(report_df["Submission Date"], errors="coerce", dayfirst=True)
-        week_start = parsed_dates.dt.to_period("W-SUN").dt.start_time
-        week_end = parsed_dates.dt.to_period("W-SUN").dt.end_time
-        report_df["_week_key"] = week_start
-        report_df["_week_label"] = week_start.dt.strftime("Week %Y-%m-%d")
-        report_df.loc[week_start.notna(), "_week_label"] = (
-            "Week "
-            + week_start[week_start.notna()].dt.strftime("%d %b %Y")
-            + " to "
-            + week_end[week_start.notna()].dt.strftime("%d %b %Y")
+        report_df = build_account_report_dataframe(
+            df,
+            account_data,
+            resolve_account_columns=_resolve_account_columns,
+            normalize_value=_normalize_report_value,
+            pricing_profile=pricing_profile,
         )
-        report_df.loc[week_start.isna(), "_week_label"] = "Unknown Week"
-
-        report_df = report_df.sort_values(by=["_week_key", "Submission Date", "BOE Number"], na_position="last")
-
-        pdf = FPDF(orientation="L", unit="mm", format="A4")
-        pdf.set_auto_page_break(auto=True, margin=10)
-        pdf.add_page()
-
-        pdf.set_font("Helvetica", "B", 14)
-        pdf.cell(0, 8, f"Account Report: {account_name}", ln=True)
-        pdf.set_font("Helvetica", "", 10)
-        pdf.cell(0, 6, f"Generated: {datetime.now().strftime('%d %b %Y %H:%M')}", ln=True)
-        pdf.cell(0, 6, f"Rows: {len(report_df)}", ln=True)
-        pdf.ln(2)
-
-        def draw_table_header():
-            pdf.set_font("Helvetica", "B", 10)
-            pdf.set_fill_color(230, 236, 245)
-            pdf.cell(95, 7, "User Ref", border=1, fill=True)
-            pdf.cell(90, 7, "BOE Number", border=1, fill=True)
-            pdf.cell(90, 7, "Submission Date", border=1, ln=True, fill=True)
-
-        grouped = report_df.groupby("_week_label", sort=False)
-        for week_label, group in grouped:
-            pdf.set_font("Helvetica", "B", 11)
-            pdf.cell(0, 8, week_label, ln=True)
-            draw_table_header()
-
-            pdf.set_font("Helvetica", "", 9)
-            for _, row in group.iterrows():
-                pdf.cell(95, 6, str(row.get("User Ref", ""))[:52], border=1)
-                pdf.cell(90, 6, str(row.get("BOE Number", ""))[:40], border=1)
-                pdf.cell(90, 6, str(row.get("Submission Date", ""))[:40], border=1, ln=True)
-            pdf.ln(2)
-
-        pdf_content = pdf.output(dest="S")
-        if isinstance(pdf_content, str):
-            pdf_content = pdf_content.encode("latin-1", errors="ignore")
-        output = BytesIO(pdf_content)
+        output = build_account_pdf_bytes(
+            account_name,
+            report_df,
+            generated_at_text=datetime.now().strftime('%d %b %Y %H:%M'),
+            normalize_value=_normalize_report_value,
+            company_profile=company_profile,
+            app_root_path=app.root_path,
+            pricing_profile=pricing_profile,
+        )
 
         return send_file(
             output,
@@ -1506,6 +1750,265 @@ def reports_account_download(account_name):
             download_name=f"Account_{account_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
         )
     except Exception as e:
+        current_app.logger.exception(
+            "Account download failed",
+            extra={
+                "account_name": account_name,
+                "job_id": selected_job_id,
+                "file_key": selected_file_key,
+            },
+        )
+        abort(500)
+
+
+@app.route("/reports/account/download-priced/<account_name>/<fmt>", methods=["GET"])
+@login_required
+def reports_account_download_priced(account_name, fmt):
+    selected_job_id = request.args.get("job_id", "").strip()
+    selected_file_key = request.args.get("file_key", "").strip().lower()
+    fmt = (fmt or "").strip().lower()
+
+    if not selected_job_id or selected_file_key not in {"csv", "xlsx"} or fmt not in {"csv", "xlsx"}:
+        abort(400)
+
+    record = get_generated_file(current_user.id, selected_job_id, selected_file_key)
+    if not record:
+        abort(404)
+
+    try:
+        df = _load_dataframe_from_generated_file(record)
+        account_report = _build_account_report(df, user_id=current_user.id)
+        account_data = None
+        for acc in account_report.get("accounts", []):
+            if acc.get("name") == account_name:
+                account_data = acc
+                break
+        if not account_data:
+            abort(404)
+
+        pricing_profile = get_account_pricing_profile(
+            current_user.id,
+            selected_job_id,
+            selected_file_key,
+            account_name,
+        )
+        report_df = build_account_report_dataframe(
+            df,
+            account_data,
+            resolve_account_columns=_resolve_account_columns,
+            normalize_value=_normalize_report_value,
+            pricing_profile=pricing_profile,
+        )
+        export_df = _build_priced_account_export_df(report_df)
+        now_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        if fmt == "csv":
+            content = export_df.to_csv(index=False).encode("utf-8")
+            return send_file(
+                BytesIO(content),
+                mimetype="text/csv",
+                as_attachment=True,
+                download_name=f"Account_{account_name}_{now_stamp}.csv",
+            )
+
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            export_df.to_excel(writer, index=False, sheet_name="Priced Account")
+        output.seek(0)
+        return send_file(
+            output,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_attachment=True,
+            download_name=f"Account_{account_name}_{now_stamp}.xlsx",
+        )
+    except Exception:
+        abort(500)
+
+
+@app.route("/reports/account/view/<account_name>", methods=["GET"])
+@login_required
+def reports_account_view(account_name):
+    """Display account data as HTML."""
+    selected_job_id = request.args.get("job_id", "").strip()
+    selected_file_key = request.args.get("file_key", "").strip().lower()
+
+    if not selected_job_id or not selected_file_key or selected_file_key not in {"csv", "xlsx"}:
+        abort(400)
+
+    record = get_generated_file(current_user.id, selected_job_id, selected_file_key)
+    if not record:
+        abort(404)
+
+    try:
+        df = _load_dataframe_from_generated_file(record)
+        account_report = _build_account_report(df, user_id=current_user.id)
+        company_profile = _company_profile_from_user_record(get_app_user(current_user.id))
+        
+        # Find matching account
+        account_data = None
+        for acc in account_report.get("accounts", []):
+            if acc["name"] == account_name:
+                account_data = acc
+                break
+        
+        if not account_data:
+            abort(404)
+
+        # Get the rows for this account
+        rows = account_data.get("rows", [])
+        pricing_profile = get_account_pricing_profile(
+            current_user.id,
+            selected_job_id,
+            selected_file_key,
+            account_name,
+        )
+        html = build_account_view_html(
+            account_name,
+            rows,
+            generated_at_text=datetime.now().strftime('%d %b %Y %H:%M'),
+            company_profile=company_profile,
+            pricing_profile=pricing_profile,
+        )
+
+        return html
+    except Exception as e:
+        abort(500)
+
+
+@app.route("/reports/account/view-all", methods=["GET"])
+@login_required
+def reports_account_view_all():
+    selected_job_id = request.args.get("job_id", "").strip()
+    selected_file_key = request.args.get("file_key", "").strip().lower()
+
+    if not selected_job_id or not selected_file_key or selected_file_key not in {"csv", "xlsx"}:
+        abort(400)
+
+    record = get_generated_file(current_user.id, selected_job_id, selected_file_key)
+    if not record:
+        abort(404)
+
+    try:
+        df = _load_dataframe_from_generated_file(record)
+        account_report = _build_account_report(df, user_id=current_user.id)
+        company_profile = _company_profile_from_user_record(get_app_user(current_user.id))
+        pricing_by_account = list_account_pricing_profiles_for_file(
+            current_user.id,
+            selected_job_id,
+            selected_file_key,
+        )
+        html = build_all_accounts_view_html(
+            account_report,
+            generated_at_text=datetime.now().strftime('%d %b %Y %H:%M'),
+            company_profile=company_profile,
+            pricing_by_account=pricing_by_account,
+        )
+        return html
+    except Exception:
+        abort(500)
+
+
+@app.route("/reports/account/download-all", methods=["GET"])
+@login_required
+def reports_account_download_all():
+    selected_job_id = request.args.get("job_id", "").strip()
+    selected_file_key = request.args.get("file_key", "").strip().lower()
+
+    if not selected_job_id or not selected_file_key or selected_file_key not in {"csv", "xlsx"}:
+        abort(400)
+
+    record = get_generated_file(current_user.id, selected_job_id, selected_file_key)
+    if not record:
+        abort(404)
+
+    try:
+        df = _load_dataframe_from_generated_file(record)
+        account_report = _build_account_report(df, user_id=current_user.id)
+        company_profile = _company_profile_from_user_record(get_app_user(current_user.id))
+        pricing_by_account = list_account_pricing_profiles_for_file(
+            current_user.id,
+            selected_job_id,
+            selected_file_key,
+        )
+        output = build_all_accounts_pdf_bytes(
+            account_report,
+            generated_at_text=datetime.now().strftime('%d %b %Y %H:%M'),
+            normalize_value=_normalize_report_value,
+            company_profile=company_profile,
+            app_root_path=app.root_path,
+            pricing_by_account=pricing_by_account,
+        )
+
+        return send_file(
+            output,
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=f"Account_Groups_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+        )
+    except Exception:
+        abort(500)
+
+
+@app.route("/reports/account/download-priced-all/<fmt>", methods=["GET"])
+@login_required
+def reports_account_download_priced_all(fmt):
+    selected_job_id = request.args.get("job_id", "").strip()
+    selected_file_key = request.args.get("file_key", "").strip().lower()
+    fmt = (fmt or "").strip().lower()
+
+    if not selected_job_id or selected_file_key not in {"csv", "xlsx"} or fmt not in {"csv", "xlsx"}:
+        abort(400)
+
+    record = get_generated_file(current_user.id, selected_job_id, selected_file_key)
+    if not record:
+        abort(404)
+
+    try:
+        df = _load_dataframe_from_generated_file(record)
+        account_report = _build_account_report(df, user_id=current_user.id)
+        pricing_by_account = list_account_pricing_profiles_for_file(
+            current_user.id,
+            selected_job_id,
+            selected_file_key,
+        )
+        combined_rows = []
+
+        for account_data in account_report.get("accounts", []):
+            account_name = str(account_data.get("name") or "")
+            report_df = build_account_report_dataframe(
+                df,
+                account_data,
+                resolve_account_columns=_resolve_account_columns,
+                normalize_value=_normalize_report_value,
+                pricing_profile=pricing_by_account.get(account_name),
+            )
+            export_df = _build_priced_account_export_df(report_df)
+            export_df.insert(0, "Account", account_name)
+            combined_rows.append(export_df)
+
+        out_df = pd.concat(combined_rows, ignore_index=True) if combined_rows else pd.DataFrame(columns=["Account", "User Ref", "BOE Number", "Submission Date", "Amount"])
+        now_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        if fmt == "csv":
+            content = out_df.to_csv(index=False).encode("utf-8")
+            return send_file(
+                BytesIO(content),
+                mimetype="text/csv",
+                as_attachment=True,
+                download_name=f"Account_Priced_All_{now_stamp}.csv",
+            )
+
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            out_df.to_excel(writer, index=False, sheet_name="Priced Accounts")
+        output.seek(0)
+        return send_file(
+            output,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_attachment=True,
+            download_name=f"Account_Priced_All_{now_stamp}.xlsx",
+        )
+    except Exception:
         abort(500)
 
 
@@ -1516,36 +2019,15 @@ def reports_account_assign():
     selected_job_id = request.json.get("job_id", "").strip()
     selected_file_key = request.json.get("file_key", "").strip().lower()
     assign_to = request.json.get("assign_to", "").strip()
-
-    if not selected_job_id or not selected_file_key or not assign_to:
-        return jsonify({"error": "Missing parameters"}), 400
-
-    record = get_generated_file(current_user.id, selected_job_id, selected_file_key)
-    if not record:
-        return jsonify({"error": "File not found"}), 404
-
-    try:
-        df = _load_dataframe_from_generated_file(record)
-        account_report = _build_account_report(df, user_id=current_user.id)
-        
-        # Create combined report with assigned unassigned entries
-        all_accounts = account_report.get("accounts", [])
-        unassigned_rows = account_report.get("unassigned_rows", [])
-        
-        # Add unassigned to the target account
-        for acc in all_accounts:
-            if acc["name"] == assign_to:
-                acc["rows"].extend(unassigned_rows)
-                acc["count"] += len(unassigned_rows)
-                break
-
-        return jsonify({
-            "success": True,
-            "accounts": all_accounts,
-            "message": f"Assigned {len(unassigned_rows)} entries to {assign_to}"
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    response, status = build_reports_account_assign_payload(
+        current_user.id,
+        selected_job_id,
+        selected_file_key,
+        assign_to,
+        get_generated_file=get_generated_file,
+        load_dataframe=_load_dataframe_from_generated_file,
+    )
+    return jsonify(response), status
 
 
 @app.route("/reports/account/decision", methods=["POST"])
@@ -1559,27 +2041,17 @@ def reports_account_decision():
     provided_key = _normalize_report_value(payload.get("decision_ref_key"))
     canonical = _normalize_report_value(payload.get("canonical_account"))
     action = _normalize_report_value(payload.get("action")).lower() or "accept"
-
-    if action not in {"accept", "separate", "unassign", "reset"}:
-        return jsonify({"error": "Invalid action"}), 400
-    if action not in {"unassign", "reset"} and not canonical:
-        return jsonify({"error": "Missing canonical account"}), 400
-
-    ref_key = provided_key or _build_decision_ref_key(raw_ref, imp_code, created_by, boe)
-    if not ref_key:
-        return jsonify({"error": "Missing decision key context"}), 400
-
-    if action == "reset":
-        removed = delete_account_alias_rule(current_user.id, ref_key)
-        return jsonify({"success": True, "message": "Decision reset", "removed": removed})
-
-    upsert_account_alias_rule(
+    response, status = build_reports_account_decision_payload(
         current_user.id,
-        ref_key,
-        "__UNASSIGNED__" if action == "unassign" else canonical.upper(),
-        decision_type=action,
+        raw_ref,
+        imp_code,
+        created_by,
+        boe,
+        provided_key,
+        canonical,
+        action,
     )
-    return jsonify({"success": True, "message": "Decision saved"})
+    return jsonify(response), status
 
 
 @app.route("/reports/account/rename", methods=["POST"])
@@ -1590,49 +2062,34 @@ def reports_account_rename():
     selected_file_key = _normalize_report_value(payload.get("file_key")).lower()
     old_account = _normalize_report_value(payload.get("old_account"))
     new_account = _normalize_report_value(payload.get("new_account"))
+    response, status = build_reports_account_rename_payload(
+        current_user.id,
+        selected_job_id,
+        selected_file_key,
+        old_account,
+        new_account,
+        get_generated_file=get_generated_file,
+        load_dataframe=_load_dataframe_from_generated_file,
+    )
+    return jsonify(response), status
 
-    if not selected_job_id or selected_file_key not in {"csv", "xlsx"}:
-        return jsonify({"error": "Invalid job or file type"}), 400
-    if not old_account or not new_account:
-        return jsonify({"error": "Missing old/new account name"}), 400
 
-    record = get_generated_file(current_user.id, selected_job_id, selected_file_key)
-    if not record:
-        return jsonify({"error": "File not found"}), 404
-
-    try:
-        df = _load_dataframe_from_generated_file(record)
-        account_report = _build_account_report(df, user_id=current_user.id)
-        target = None
-        for account in account_report.get("accounts", []):
-            if str(account.get("name", "")) == old_account:
-                target = account
-                break
-
-        if not target:
-            return jsonify({"error": "Account not found"}), 404
-
-        changed = 0
-        for row in target.get("rows", []):
-            ref_key = _build_decision_ref_key(
-                row.get("user_ref_raw", ""),
-                row.get("imp_code", ""),
-                row.get("created_by", ""),
-                row.get("boe", ""),
-            )
-            if not ref_key:
-                continue
-            upsert_account_alias_rule(
-                current_user.id,
-                ref_key,
-                new_account.upper(),
-                decision_type="separate",
-            )
-            changed += 1
-
-        return jsonify({"success": True, "changed": changed, "message": "Account renamed"})
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+@app.route("/reports/account/delete", methods=["POST"])
+@login_required
+def reports_account_delete():
+    payload = request.get_json(silent=True) or {}
+    selected_job_id = _normalize_report_value(payload.get("job_id"))
+    selected_file_key = _normalize_report_value(payload.get("file_key")).lower()
+    account_name = _normalize_report_value(payload.get("account_name"))
+    response, status = build_reports_account_delete_payload(
+        current_user.id,
+        selected_job_id,
+        selected_file_key,
+        account_name,
+        get_generated_file=get_generated_file,
+        load_dataframe=_load_dataframe_from_generated_file,
+    )
+    return jsonify(response), status
 
 
 @app.route("/credentials/save", methods=["POST"])
@@ -1755,7 +2212,7 @@ def close_account():
 @login_required
 def run_job():
     _validate_csrf_or_abort()
-    saved_credentials = get_portal_credentials(current_user.id)
+    saved_credentials = _get_portal_credentials_or_recover(current_user.id, flash_on_error=True)
     if not saved_credentials:
         log_auth_event(current_user.id, "job_start", "failed", _client_ip(), "missing portal credentials")
         flash("Save portal credentials first", "error")
@@ -1766,6 +2223,7 @@ def run_job():
     headless = not admin_debug_browser if is_admin else True
 
     payload = {
+        "retrieval_type": "financial",
         "owner": current_user.id,
         "username": saved_credentials["portal_username"],
         "password": saved_credentials["portal_password"],
@@ -1779,6 +2237,7 @@ def run_job():
     }
 
     payload_signature = {
+        "retrieval_type": payload.get("retrieval_type", "financial"),
         "start_date": payload["start_date"],
         "end_date": payload["end_date"],
         "page_size": str(payload["page_size"]),
@@ -1798,6 +2257,112 @@ def run_job():
     return redirect(url_for("index"))
 
 
+@app.route("/run/boe-blocking", methods=["POST"])
+@login_required
+def run_boe_blocking_job():
+    _validate_csrf_or_abort()
+    saved_credentials = _get_portal_credentials_or_recover(current_user.id, flash_on_error=True)
+    if not saved_credentials:
+        log_auth_event(current_user.id, "job_start", "failed", _client_ip(), "missing portal credentials")
+        flash("Save portal credentials first", "error")
+        return redirect(url_for("index"))
+
+    admin_debug_browser = request.form.get("show_browser") == "on"
+    is_admin = getattr(current_user, "is_admin", False)
+    headless = not admin_debug_browser if is_admin else True
+
+    payload = {
+        "retrieval_type": "boe_blocking_current",
+        "elapsed_only": request.form.get("elapsed_60_days") == "on",
+        "customs_office_code": request.form.get("customs_office_code", "").strip(),
+        "im_exporter_code": request.form.get("im_exporter_code", "").strip(),
+        "created_by": request.form.get("created_by", "M").strip() or "M",
+        "owner": current_user.id,
+        "username": saved_credentials["portal_username"],
+        "password": saved_credentials["portal_password"],
+        "start_date": "",
+        "end_date": "",
+        "page_size": request.form.get("boe_page_size", "").strip() or "200",
+        "output_dir": request.form.get("output_dir", "").strip(),
+        "edge_driver_path": request.form.get("edge_driver_path", "").strip(),
+        "label": request.form.get("label", "").strip() or "Current BOE Blocking",
+        "headless": headless,
+    }
+
+    payload_signature = {
+        "retrieval_type": payload.get("retrieval_type", "financial"),
+        "start_date": payload["start_date"],
+        "end_date": payload["end_date"],
+        "page_size": str(payload["page_size"]),
+        "headless": bool(payload["headless"]),
+    }
+
+    duplicate_job = _find_duplicate_active_job(current_user.id, payload_signature)
+    if duplicate_job:
+        existing_id = duplicate_job.get("id")
+        flash(f"A matching run ({existing_id}) is already active", "error")
+        log_auth_event(current_user.id, "job_start", "blocked", _client_ip(), f"duplicate_of={existing_id}")
+        return redirect(url_for("index"))
+
+    job_id = _enqueue_job(payload)
+    log_auth_event(current_user.id, "job_start", "success", _client_ip(), f"job_id={job_id}")
+    flash(f"BOE Blocking job {job_id} started", "success")
+    return redirect(url_for("index"))
+
+
+@app.route("/run/boe-status", methods=["POST"])
+@login_required
+def run_boe_status_job():
+    _validate_csrf_or_abort()
+    saved_credentials = _get_portal_credentials_or_recover(current_user.id, flash_on_error=True)
+    if not saved_credentials:
+        log_auth_event(current_user.id, "job_start", "failed", _client_ip(), "missing portal credentials")
+        flash("Save portal credentials first", "error")
+        return redirect(url_for("index"))
+
+    admin_debug_browser = request.form.get("show_browser") == "on"
+    is_admin = getattr(current_user, "is_admin", False)
+    headless = not admin_debug_browser if is_admin else True
+
+    payload = {
+        "retrieval_type": "boe_status_dates",
+        "elapsed_only": False,
+        "customs_office_code": "",
+        "im_exporter_code": "",
+        "created_by": request.form.get("created_by", "M").strip() or "M",
+        "owner": current_user.id,
+        "username": saved_credentials["portal_username"],
+        "password": saved_credentials["portal_password"],
+        "start_date": _to_portal_date(request.form.get("boe_status_start_date", "").strip()),
+        "end_date": _to_portal_date(request.form.get("boe_status_end_date", "").strip()),
+        "page_size": request.form.get("boe_status_page_size", "").strip() or "200",
+        "output_dir": request.form.get("output_dir", "").strip(),
+        "edge_driver_path": request.form.get("edge_driver_path", "").strip(),
+        "label": request.form.get("label", "").strip() or "BOE Status Retrieval",
+        "headless": headless,
+    }
+
+    payload_signature = {
+        "retrieval_type": payload.get("retrieval_type", "financial"),
+        "start_date": payload["start_date"],
+        "end_date": payload["end_date"],
+        "page_size": str(payload["page_size"]),
+        "headless": bool(payload["headless"]),
+    }
+
+    duplicate_job = _find_duplicate_active_job(current_user.id, payload_signature)
+    if duplicate_job:
+        existing_id = duplicate_job.get("id")
+        flash(f"A matching run ({existing_id}) is already active", "error")
+        log_auth_event(current_user.id, "job_start", "blocked", _client_ip(), f"duplicate_of={existing_id}")
+        return redirect(url_for("index"))
+
+    job_id = _enqueue_job(payload)
+    log_auth_event(current_user.id, "job_start", "success", _client_ip(), f"job_id={job_id}")
+    flash(f"BOE Status job {job_id} started", "success")
+    return redirect(url_for("index"))
+
+
 @app.route("/run/<job_id>/retry", methods=["POST"])
 @login_required
 def retry_job(job_id):
@@ -1813,7 +2378,7 @@ def retry_job(job_id):
         flash("Only failed or stopped runs can be retried", "error")
         return redirect(url_for("index"))
 
-    saved_credentials = get_portal_credentials(current_user.id)
+    saved_credentials = _get_portal_credentials_or_recover(current_user.id, flash_on_error=True)
     if not saved_credentials:
         flash("Save portal credentials first", "error")
         return redirect(url_for("index"))
@@ -1823,6 +2388,11 @@ def retry_job(job_id):
     headless = bool(original_payload.get("headless", True)) if is_admin else True
 
     payload = {
+        "retrieval_type": str(original_payload.get("retrieval_type", "financial") or "financial"),
+        "elapsed_only": bool(original_payload.get("elapsed_only", False)),
+        "customs_office_code": str(original_payload.get("customs_office_code", "")),
+        "im_exporter_code": str(original_payload.get("im_exporter_code", "")),
+        "created_by": str(original_payload.get("created_by", "M") or "M"),
         "owner": current_user.id,
         "username": saved_credentials["portal_username"],
         "password": saved_credentials["portal_password"],
@@ -1836,6 +2406,7 @@ def retry_job(job_id):
     }
 
     payload_signature = {
+        "retrieval_type": payload.get("retrieval_type", "financial"),
         "start_date": payload["start_date"],
         "end_date": payload["end_date"],
         "page_size": str(payload["page_size"]),
@@ -2187,6 +2758,9 @@ def admin_users_action():
         new_password = request.form.get("new_password", "")
         new_role = request.form.get("new_role", "user").strip()
         new_email_raw = request.form.get("new_email", "")
+        company_name = request.form.get("company_name", "").strip()
+        company_address = request.form.get("company_address", "").strip()
+        company_phone = request.form.get("company_phone", "").strip()
         new_email = _normalize_email(new_email_raw)
 
         if not new_user or not new_password:
@@ -2207,6 +2781,13 @@ def admin_users_action():
                 return redirect(url_for("admin_users"))
 
         ensure_app_user(new_user, generate_password_hash(new_password), role=new_role, is_active=True, email=new_email or None)
+        set_user_company_profile(
+            new_user,
+            company_name=company_name,
+            company_address=company_address,
+            company_phone=company_phone,
+            company_logo_path=None,
+        )
         log_auth_event(current_user.id, "admin_user_create", "success", _client_ip(), f"target={new_user}")
         flash(f"User '{new_user}' created", "success")
         return redirect(url_for("admin_users"))

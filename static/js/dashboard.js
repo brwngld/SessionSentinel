@@ -129,6 +129,56 @@
     startAutoplay();
   }
 
+  function initRetrievalTabs() {
+    const tabsWrap = document.getElementById('retrieval-tabs');
+    if (!tabsWrap) {
+      return;
+    }
+
+    const tabButtons = Array.from(tabsWrap.querySelectorAll('.retrieval-tab-btn'));
+    const panels = Array.from(document.querySelectorAll('.retrieval-tab-panel'));
+
+    function activateTab(targetId) {
+      tabButtons.forEach(function (btn) {
+        btn.classList.toggle('active', btn.getAttribute('data-target') === targetId);
+      });
+      panels.forEach(function (panel) {
+        panel.classList.toggle('active', panel.id === targetId);
+      });
+    }
+
+    tabButtons.forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        const targetId = btn.getAttribute('data-target');
+        if (!targetId) {
+          return;
+        }
+        activateTab(targetId);
+      });
+    });
+  }
+
+  function initResultsTabs() {
+    const resultsTabs = document.getElementById('results-tabs');
+    if (!resultsTabs) {
+      return;
+    }
+
+    const tabButtons = resultsTabs.querySelectorAll('.results-tab-btn');
+    tabButtons.forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        // Remove active class from all buttons
+        tabButtons.forEach(function (b) {
+          b.classList.remove('active');
+        });
+        // Add active class to clicked button
+        btn.classList.add('active');
+        // Apply filters
+        applyJobFilters();
+      });
+    });
+  }
+
   function initDatePickers() {
     if (!window.flatpickr) {
       return;
@@ -136,9 +186,51 @@
     flatpickr('.js-date-input', {
       allowInput: true,
       altInput: true,
-      altFormat: 'd/m/y',
+      altFormat: 'd/m/Y',
       dateFormat: 'Y-m-d',
       disableMobile: true,
+    });
+  }
+
+  function initBoeStatusQuickRanges() {
+    const startInput = document.getElementById('boe-status-start-date');
+    const endInput = document.getElementById('boe-status-end-date');
+    const rangeButtons = document.querySelectorAll('[data-boe-month-range]');
+    if (!startInput || !endInput || !rangeButtons.length) {
+      return;
+    }
+
+    function formatYMD(dateObj) {
+      const year = dateObj.getFullYear();
+      const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+      const day = String(dateObj.getDate()).padStart(2, '0');
+      return String(year) + '-' + month + '-' + day;
+    }
+
+    function setDateInputValue(inputEl, dateObj) {
+      if (inputEl._flatpickr) {
+        inputEl._flatpickr.setDate(dateObj, true, 'Y-m-d');
+      } else {
+        inputEl.value = formatYMD(dateObj);
+        inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }
+
+    rangeButtons.forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        const monthsRaw = btn.getAttribute('data-boe-month-range') || '';
+        const months = Number(monthsRaw);
+        if (!Number.isFinite(months) || months <= 0) {
+          return;
+        }
+
+        const endDate = new Date();
+        const startDate = new Date(endDate.getTime());
+        startDate.setMonth(startDate.getMonth() - months);
+
+        setDateInputValue(startInput, startDate);
+        setDateInputValue(endInput, endDate);
+      });
     });
   }
 
@@ -222,14 +314,20 @@
     const query = (searchInput.value || '').toLowerCase().trim();
     const statusChip = document.querySelector('.chip.active');
     const statusFilter = statusChip ? statusChip.getAttribute('data-job-filter') : 'all';
+    
+    // Get retrieval type filter from results tabs
+    const resultsTabBtn = document.querySelector('.results-tab-btn.active');
+    const retrievalTypeFilter = resultsTabBtn ? resultsTabBtn.getAttribute('data-filter') : 'all';
 
     const jobs = document.querySelectorAll('[data-job-id]');
     for (const jobEl of jobs) {
       const status = (jobEl.getAttribute('data-job-status') || '').toLowerCase();
+      const retrievalType = (jobEl.getAttribute('data-retrieval-type') || 'financial').toLowerCase();
       const text = jobEl.textContent.toLowerCase();
       const matchesQuery = !query || text.includes(query);
       const matchesStatus = statusFilter === 'all' || status === statusFilter;
-      jobEl.style.display = matchesQuery && matchesStatus ? '' : 'none';
+      const matchesRetrieval = retrievalTypeFilter === 'all' || retrievalType === retrievalTypeFilter;
+      jobEl.style.display = matchesQuery && matchesStatus && matchesRetrieval ? '' : 'none';
     }
   }
 
@@ -405,6 +503,7 @@
 
       const openLink = document.createElement('a');
       openLink.href = '/view/' + encodeURIComponent(job.id) + '/' + encodeURIComponent(key);
+      openLink.target = '_blank';
       openLink.textContent = 'Open';
       openLink.className = 'file-link file-link-open';
       actionsCell.appendChild(openLink);
@@ -413,6 +512,7 @@
 
       const downloadLink = document.createElement('a');
       downloadLink.href = '/download/' + encodeURIComponent(job.id) + '/' + encodeURIComponent(key);
+      downloadLink.target = '_blank';
       downloadLink.textContent = 'Download';
       downloadLink.className = 'file-link file-link-download';
       actionsCell.appendChild(downloadLink);
@@ -700,7 +800,10 @@
 
   function init() {
     initDatePickers();
+    initBoeStatusQuickRanges();
     initSavedCarousel();
+    initRetrievalTabs();
+    initResultsTabs();
     bindEvents();
     updateLogs();
     updateJobs();

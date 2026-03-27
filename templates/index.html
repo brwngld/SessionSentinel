@@ -112,62 +112,160 @@
 
     <section class="card section-anchor animated-card delay-2" id="run-export">
       <h2>Run Data Retrieval</h2>
-      <form method="post" action="/run">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <div class="grid">
-          <div class="field">
-            <label>Start Date</label>
-            <input class="js-date-input" name="start_date" type="text" value="{{ defaults.start_date }}" placeholder="dd/mm/yy" required>
-          </div>
-          <div class="field">
-            <label>End Date</label>
-            <input class="js-date-input" name="end_date" type="text" value="{{ defaults.end_date }}" placeholder="dd/mm/yy" required>
-          </div>
-          <div class="field">
-            <label>Page Size</label>
-            <input name="page_size" type="number" value="{{ defaults.page_size }}" min="10" required>
-          </div>
-          <div class="field">
-            <label>Report Label</label>
-            <input name="label" type="text" value="{{ defaults.label }}">
-          </div>
-          <div class="field">
-            <label>Output Directory</label>
-            <input name="output_dir" type="text" value="{{ defaults.output_dir }}">
-          </div>
-          <div class="field">
-            <label>Edge Driver Path</label>
-            <input name="edge_driver_path" type="text" value="{{ defaults.edge_driver_path }}">
-          </div>
-        </div>
+      <div class="retrieval-tabs" id="retrieval-tabs">
+        <button type="button" class="retrieval-tab-btn active" id="retrieval-tab-financial" data-target="retrieval-panel-financial">Financial Retrieval</button>
+        <button type="button" class="retrieval-tab-btn" id="retrieval-tab-boe-blocking" data-target="retrieval-panel-boe-blocking">BOE Blocking</button>
+        <button type="button" class="retrieval-tab-btn" id="retrieval-tab-boe-status" data-target="retrieval-panel-boe-status">BOE Status Retrieval</button>
+      </div>
 
-        <div class="actions">
+      <div class="retrieval-tab-panel active" id="retrieval-panel-financial">
+        <form method="post" action="/run" id="financial-retrieval-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div class="grid">
+            <div class="field">
+              <label>Start Date</label>
+              <input class="js-date-input" name="start_date" type="text" value="{{ defaults.start_date }}" placeholder="dd/mm/yyyy" required>
+            </div>
+            <div class="field">
+              <label>End Date</label>
+              <input class="js-date-input" name="end_date" type="text" value="{{ defaults.end_date }}" placeholder="dd/mm/yyyy" required>
+            </div>
+            <div class="field">
+              <label>Page Size</label>
+              <input name="page_size" type="number" value="{{ defaults.page_size }}" min="10" required>
+            </div>
+            <div class="field">
+              <label>Report Label</label>
+              <input name="label" type="text" value="{{ defaults.label }}">
+            </div>
+            <div class="field">
+              <label>Output Directory</label>
+              <input name="output_dir" type="text" value="{{ defaults.output_dir }}">
+            </div>
+            <div class="field">
+              <label>Edge Driver Path</label>
+              <input name="edge_driver_path" type="text" value="{{ defaults.edge_driver_path }}">
+            </div>
+          </div>
+
+          <div class="actions">
+            {% if is_admin %}
+            <label>
+              <input name="show_browser" type="checkbox" checked>
+              Show browser window (admin debug)
+            </label>
+            {% else %}
+            <span class="run-mode-note">Runs execute in background mode for standard users.</span>
+            {% endif %}
+            <button type="submit" id="financial-retrieval-start-btn">Start Data Retrieval</button>
+          </div>
           {% if is_admin %}
-          <label>
-            <input name="show_browser" type="checkbox" checked>
-            Show browser window (admin debug)
-          </label>
-          {% else %}
-          <span class="run-mode-note">Runs execute in background mode for standard users.</span>
+          <div class="run-mode-note">Disable browser visibility only when you intentionally want headless mode.</div>
           {% endif %}
-          <button type="submit">Start Data Retrieval</button>
-        </div>
-        {% if is_admin %}
-        <div class="run-mode-note">Disable browser visibility only when you intentionally want headless mode.</div>
-        {% endif %}
-      </form>
+        </form>
+      </div>
+
+      <div class="retrieval-tab-panel" id="retrieval-panel-boe-blocking">
+        <div class="run-mode-note">Current BOE Blocking mode searches Non-Exited BOE using the Elapsed 60 Days filter.</div>
+        <form id="boe-blocking-retrieval-form" class="boe-status-form" action="/run/boe-blocking" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="created_by" value="M">
+          <div class="grid boe-status-grid">
+            <div class="field boe-blocking-field">
+              <label class="checkbox-label" for="boe-blocking-checkbox">
+                <input id="boe-blocking-checkbox" name="elapsed_60_days" type="checkbox" checked>
+                Elapsed 60 Days
+              </label>
+              <small id="boe-blocking-help">Maps to the customs portal Elapsed 60 Days checkbox.</small>
+            </div>
+            <div class="field">
+              <label for="boe-page-size">Page Size</label>
+              <input id="boe-page-size" name="boe_page_size" type="number" value="200" min="10" required>
+            </div>
+          </div>
+
+          <div class="actions boe-status-actions">
+            {% if is_admin %}
+            <label>
+              <input name="show_browser" type="checkbox" checked>
+              Show browser window (admin debug)
+            </label>
+            {% else %}
+            <span class="run-mode-note">Runs execute in background mode for standard users.</span>
+            {% endif %}
+            <button type="submit" id="boe-blocking-start-btn" class="boe-status-action">Start BOE Blocking Retrieval</button>
+          </div>
+          {% if is_admin %}
+          <div class="run-mode-note">Disable browser visibility only when you intentionally want headless mode.</div>
+          {% endif %}
+        </form>
+      </div>
+
+      <div class="retrieval-tab-panel" id="retrieval-panel-boe-status">
+        <div class="run-mode-note">BOE Status Retrieval searches Non-Exited BOE by date range and paginates until no rows remain.</div>
+        <form id="boe-status-retrieval-form" class="boe-status-form" action="/run/boe-status" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="created_by" value="M">
+          <div class="grid boe-status-grid">
+            <div class="field">
+              <label for="boe-status-start-date">Start Date</label>
+              <input id="boe-status-start-date" class="js-date-input" name="boe_status_start_date" type="text" value="{{ defaults.start_date }}" placeholder="dd/mm/yyyy" required>
+            </div>
+            <div class="field">
+              <label for="boe-status-end-date">End Date</label>
+              <input id="boe-status-end-date" class="js-date-input" name="boe_status_end_date" type="text" value="{{ defaults.end_date }}" placeholder="dd/mm/yyyy" required>
+            </div>
+            <div class="field boe-range-field">
+              <label>Quick Range</label>
+              <div class="boe-range-actions">
+                <button type="button" class="boe-range-btn" data-boe-month-range="6">-6M</button>
+                <button type="button" class="boe-range-btn" data-boe-month-range="3">-3M</button>
+                <button type="button" class="boe-range-btn" data-boe-month-range="1">-1M</button>
+              </div>
+            </div>
+            <div class="field">
+              <label for="boe-status-page-size">Page Size</label>
+              <input id="boe-status-page-size" name="boe_status_page_size" type="number" value="200" min="10" required>
+            </div>
+          </div>
+
+          <div class="actions boe-status-actions">
+            {% if is_admin %}
+            <label>
+              <input name="show_browser" type="checkbox" checked>
+              Show browser window (admin debug)
+            </label>
+            {% else %}
+            <span class="run-mode-note">Runs execute in background mode for standard users.</span>
+            {% endif %}
+            <button type="submit" id="boe-status-start-btn" class="boe-status-action">Start BOE Status Retrieval</button>
+          </div>
+          {% if is_admin %}
+          <div class="run-mode-note">Disable browser visibility only when you intentionally want headless mode.</div>
+          {% endif %}
+        </form>
+      </div>
     </section>
 
     <section class="card section-anchor animated-card delay-3" id="activity">
       <h2>Recent Retrieval Runs</h2>
       <div class="card-note">Generated files are available for up to 24 hours and then removed automatically.</div>
       <div class="card-note">Storage: Database-backed files (Open or Download directly from this dashboard).</div>
+      
+      <!-- Results tabs for different retrieval types -->
+      <div class="results-tabs" id="results-tabs">
+        <button type="button" class="results-tab-btn active" data-filter="all">All Runs</button>
+        <button type="button" class="results-tab-btn" data-filter="financial">Financial</button>
+        <button type="button" class="results-tab-btn" data-filter="boe_blocking_current">BOE Blocking</button>
+        <button type="button" class="results-tab-btn" data-filter="boe_status_dates">BOE Status</button>
+      </div>
+      
       <div class="refresh-note" id="jobs-last-updated">Last updated: --</div>
       <div class="jobs" id="jobs" data-retention-hours="{{ file_retention_hours }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         {% if jobs %}
           {% for job in jobs %}
-            <article class="job" data-job-id="{{ job.id }}" data-job-status="{{ job.status }}">
+            <article class="job" data-job-id="{{ job.id }}" data-job-status="{{ job.status }}" data-retrieval-type="{{ job.payload.retrieval_type if job.payload else 'financial' }}">
               <div><strong>ID:</strong> {{ job.id }}</div>
               <div class="status {{ job.status }}">{{ job.status }}</div>
               <div class="job-stop-control">

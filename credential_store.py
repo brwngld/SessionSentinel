@@ -5,8 +5,9 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from cryptography.fernet import Fernet
+from cryptography.fernet import InvalidToken
 
-from config import CREDENTIAL_ENCRYPTION_KEY, DATABASE_PATH
+from config import ALLOW_DEV_ADMIN_SETUP, CREDENTIAL_ENCRYPTION_KEY, DATABASE_PATH
 
 DB_PATH = DATABASE_PATH if os.path.isabs(DATABASE_PATH) else os.path.join(os.path.dirname(__file__), DATABASE_PATH)
 DB_DIR = os.path.dirname(DB_PATH)
@@ -14,14 +15,30 @@ if DB_DIR:
     os.makedirs(DB_DIR, exist_ok=True)
 
 
+class CredentialDecryptionError(Exception):
+    """Raised when saved portal credentials cannot be decrypted with active key."""
+
+
 def _build_fernet():
     key = CREDENTIAL_ENCRYPTION_KEY.strip()
+    key_lower = key.lower()
+    placeholder_key = (not key) or key_lower.startswith("replace-") or "change-this" in key_lower
+
+    if not ALLOW_DEV_ADMIN_SETUP and placeholder_key:
+        raise RuntimeError(
+            "Refusing startup: CREDENTIAL_ENCRYPTION_KEY is missing or placeholder while running in non-dev mode."
+        )
+
     if not key:
         key = Fernet.generate_key().decode("utf-8")
 
     try:
         return Fernet(key.encode("utf-8"))
     except Exception:
+        if not ALLOW_DEV_ADMIN_SETUP:
+            raise RuntimeError(
+                "Refusing startup: CREDENTIAL_ENCRYPTION_KEY must be a valid Fernet key in non-dev mode."
+            )
         derived = base64.urlsafe_b64encode(key.encode("utf-8").ljust(32, b"0")[:32])
         return Fernet(derived)
 
@@ -69,6 +86,14 @@ def init_db():
             )
         if "email" not in existing_cols:
             conn.execute("ALTER TABLE app_users ADD COLUMN email TEXT")
+        if "company_name" not in existing_cols:
+            conn.execute("ALTER TABLE app_users ADD COLUMN company_name TEXT")
+        if "company_address" not in existing_cols:
+            conn.execute("ALTER TABLE app_users ADD COLUMN company_address TEXT")
+        if "company_phone" not in existing_cols:
+            conn.execute("ALTER TABLE app_users ADD COLUMN company_phone TEXT")
+        if "company_logo_path" not in existing_cols:
+            conn.execute("ALTER TABLE app_users ADD COLUMN company_logo_path TEXT")
 
         conn.execute(
             """
@@ -107,6 +132,12 @@ def init_db():
             )
             """
         )
+        run_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(retrieval_runs)").fetchall()
+        }
+        if "payload_json" not in run_cols:
+            conn.execute("ALTER TABLE retrieval_runs ADD COLUMN payload_json TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS generated_files (
@@ -132,6 +163,63 @@ def init_db():
                 decision_type TEXT NOT NULL DEFAULT 'accept',
                 updated_at TEXT NOT NULL,
                 UNIQUE(user_id, ref_key)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS account_custom_names (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                account_name TEXT NOT NULL COLLATE NOCASE,
+                updated_at TEXT NOT NULL,
+                UNIQUE(user_id, account_name)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS account_pricing_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                job_id TEXT NOT NULL,
+                file_key TEXT NOT NULL,
+                account_name TEXT NOT NULL COLLATE NOCASE,
+                pricing_mode TEXT NOT NULL DEFAULT 'none',
+                fixed_price REAL NOT NULL DEFAULT 0,
+                line_prices_json TEXT NOT NULL DEFAULT '{}',
+                currency_code TEXT NOT NULL DEFAULT 'GHS',
+                manual_rate REAL,
+                conversion_note TEXT,
+                updated_at TEXT NOT NULL,
+                UNIQUE(user_id, job_id, file_key, account_name)
+            )
+            """
+        )
+        pricing_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(account_pricing_profiles)").fetchall()
+        }
+        if "currency_code" not in pricing_cols:
+            conn.execute("ALTER TABLE account_pricing_profiles ADD COLUMN currency_code TEXT NOT NULL DEFAULT 'GHS'")
+        if "manual_rate" not in pricing_cols:
+            conn.execute("ALTER TABLE account_pricing_profiles ADD COLUMN manual_rate REAL")
+        if "conversion_note" not in pricing_cols:
+            conn.execute("ALTER TABLE account_pricing_profiles ADD COLUMN conversion_note TEXT")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS account_pricing_rate_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                job_id TEXT NOT NULL,
+                file_key TEXT NOT NULL,
+                account_name TEXT NOT NULL COLLATE NOCASE,
+                pricing_mode TEXT NOT NULL,
+                currency_code TEXT NOT NULL,
+                manual_rate REAL,
+                conversion_note TEXT,
+                report_total REAL NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
             )
             """
         )
@@ -184,6 +272,296 @@ def delete_account_alias_rule(user_id, ref_key):
         cursor = conn.execute(
             "DELETE FROM account_alias_rules WHERE user_id = ? AND ref_key = ?",
             (user_id, ref_key),
+        )
+        conn.commit()
+        return int(cursor.rowcount or 0)
+    finally:
+        conn.close()
+
+
+def upsert_custom_account_name(user_id, account_name):
+    account_name = str(account_name or "").strip()
+    if not account_name:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO account_custom_names (user_id, account_name, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id, account_name)
+            DO UPDATE SET
+                updated_at=excluded.updated_at
+            """,
+            (user_id, account_name, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_custom_account_names_for_user(user_id):
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT account_name
+            FROM account_custom_names
+            WHERE user_id = ?
+            ORDER BY account_name COLLATE NOCASE ASC
+            """,
+            (user_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [str(row["account_name"]).strip() for row in rows if str(row["account_name"]).strip()]
+
+
+def delete_custom_account_name(user_id, account_name):
+    account_name = str(account_name or "").strip()
+    if not account_name:
+        return 0
+    conn = _connect()
+    try:
+        cursor = conn.execute(
+            "DELETE FROM account_custom_names WHERE user_id = ? AND account_name = ?",
+            (user_id, account_name),
+        )
+        conn.commit()
+        return int(cursor.rowcount or 0)
+    finally:
+        conn.close()
+
+
+def upsert_account_pricing_profile(
+    user_id,
+    job_id,
+    file_key,
+    account_name,
+    pricing_mode="none",
+    fixed_price=0.0,
+    line_prices=None,
+    currency_code="GHS",
+    manual_rate=None,
+    conversion_note="",
+):
+    mode = str(pricing_mode or "none").strip().lower()
+    if mode not in {"none", "automatic", "manual"}:
+        mode = "none"
+    try:
+        fixed = float(fixed_price or 0)
+    except (TypeError, ValueError):
+        fixed = 0.0
+
+    cleaned_line_prices = {}
+    if isinstance(line_prices, dict):
+        for key, value in line_prices.items():
+            line_key = str(key or "").strip()
+            if not line_key:
+                continue
+            try:
+                amount = float(value)
+            except (TypeError, ValueError):
+                amount = 0.0
+            cleaned_line_prices[line_key] = max(0.0, amount)
+
+    currency = str(currency_code or "GHS").strip().upper()
+    if currency not in {"GHS", "USD"}:
+        currency = "GHS"
+    try:
+        parsed_manual_rate = float(manual_rate) if manual_rate is not None else None
+    except (TypeError, ValueError):
+        parsed_manual_rate = None
+    if parsed_manual_rate is not None and parsed_manual_rate <= 0:
+        parsed_manual_rate = None
+    note = str(conversion_note or "").strip()
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO account_pricing_profiles (
+                user_id, job_id, file_key, account_name, pricing_mode, fixed_price, line_prices_json, currency_code, manual_rate, conversion_note, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, job_id, file_key, account_name)
+            DO UPDATE SET
+                pricing_mode=excluded.pricing_mode,
+                fixed_price=excluded.fixed_price,
+                line_prices_json=excluded.line_prices_json,
+                currency_code=excluded.currency_code,
+                manual_rate=excluded.manual_rate,
+                conversion_note=excluded.conversion_note,
+                updated_at=excluded.updated_at
+            """,
+            (
+                user_id,
+                job_id,
+                file_key,
+                account_name,
+                mode,
+                max(0.0, fixed),
+                json.dumps(cleaned_line_prices),
+                currency,
+                parsed_manual_rate,
+                note,
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_account_pricing_profile(user_id, job_id, file_key, account_name):
+    conn = _connect()
+    try:
+        row = conn.execute(
+            """
+            SELECT pricing_mode, fixed_price, line_prices_json, currency_code, manual_rate, conversion_note, updated_at
+            FROM account_pricing_profiles
+            WHERE user_id = ? AND job_id = ? AND file_key = ? AND account_name = ?
+            """,
+            (user_id, job_id, file_key, account_name),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+
+    try:
+        line_prices = json.loads(row["line_prices_json"] or "{}")
+    except json.JSONDecodeError:
+        line_prices = {}
+
+    return {
+        "pricing_mode": str(row["pricing_mode"] or "none").strip().lower(),
+        "fixed_price": float(row["fixed_price"] or 0),
+        "line_prices": line_prices if isinstance(line_prices, dict) else {},
+        "currency_code": str(row["currency_code"] or "GHS").strip().upper() or "GHS",
+        "manual_rate": float(row["manual_rate"] or 0) if row["manual_rate"] is not None else None,
+        "conversion_note": str(row["conversion_note"] or "").strip(),
+        "updated_at": row["updated_at"],
+    }
+
+
+def list_account_pricing_profiles_for_file(user_id, job_id, file_key):
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT account_name, pricing_mode, fixed_price, line_prices_json, currency_code, manual_rate, conversion_note, updated_at
+            FROM account_pricing_profiles
+            WHERE user_id = ? AND job_id = ? AND file_key = ?
+            """,
+            (user_id, job_id, file_key),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    out = {}
+    for row in rows:
+        try:
+            line_prices = json.loads(row["line_prices_json"] or "{}")
+        except json.JSONDecodeError:
+            line_prices = {}
+        out[str(row["account_name"])] = {
+            "pricing_mode": str(row["pricing_mode"] or "none").strip().lower(),
+            "fixed_price": float(row["fixed_price"] or 0),
+            "line_prices": line_prices if isinstance(line_prices, dict) else {},
+            "currency_code": str(row["currency_code"] or "GHS").strip().upper() or "GHS",
+            "manual_rate": float(row["manual_rate"] or 0) if row["manual_rate"] is not None else None,
+            "conversion_note": str(row["conversion_note"] or "").strip(),
+            "updated_at": row["updated_at"],
+        }
+    return out
+
+
+def record_account_pricing_rate_history(
+    user_id,
+    job_id,
+    file_key,
+    account_name,
+    pricing_mode,
+    currency_code,
+    manual_rate,
+    conversion_note,
+    report_total,
+):
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO account_pricing_rate_history (
+                user_id, job_id, file_key, account_name, pricing_mode, currency_code, manual_rate, conversion_note, report_total, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                job_id,
+                file_key,
+                account_name,
+                str(pricing_mode or "none").strip().lower(),
+                str(currency_code or "GHS").strip().upper(),
+                float(manual_rate) if manual_rate is not None else None,
+                str(conversion_note or "").strip(),
+                float(report_total or 0),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_account_pricing_rate_history(user_id, job_id, file_key, account_name, limit=12):
+    try:
+        limited = max(1, min(int(limit or 12), 50))
+    except (TypeError, ValueError):
+        limited = 12
+
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT pricing_mode, currency_code, manual_rate, conversion_note, report_total, created_at
+            FROM account_pricing_rate_history
+            WHERE user_id = ? AND job_id = ? AND file_key = ? AND account_name = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (user_id, job_id, file_key, account_name, limited),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [
+        {
+            "pricing_mode": str(row["pricing_mode"] or "none").strip().lower(),
+            "currency_code": str(row["currency_code"] or "GHS").strip().upper() or "GHS",
+            "manual_rate": float(row["manual_rate"] or 0) if row["manual_rate"] is not None else None,
+            "conversion_note": str(row["conversion_note"] or "").strip(),
+            "report_total": float(row["report_total"] or 0),
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def delete_account_pricing_profile(user_id, job_id, file_key, account_name):
+    conn = _connect()
+    try:
+        cursor = conn.execute(
+            """
+            DELETE FROM account_pricing_profiles
+            WHERE user_id = ? AND job_id = ? AND file_key = ? AND account_name = ?
+            """,
+            (user_id, job_id, file_key, account_name),
         )
         conn.commit()
         return int(cursor.rowcount or 0)
@@ -343,13 +721,147 @@ def get_generated_file(user_id, job_id, file_key):
     }
 
 
-def delete_expired_generated_files(retention_hours):
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, int(retention_hours or 24)))).isoformat()
+def delete_expired_generated_files(retention_hours, manual_upload_retention_days=180):
+    retrieval_cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, int(retention_hours or 24)))
+    upload_cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, int(manual_upload_retention_days or 180)))
 
     conn = _connect()
     try:
-        conn.execute("DELETE FROM generated_files WHERE created_at < ?", (cutoff,))
+        rows = conn.execute(
+            """
+            SELECT g.id, g.created_at, r.payload_json
+            FROM generated_files g
+            LEFT JOIN retrieval_runs r ON r.job_id = g.job_id
+            """
+        ).fetchall()
+
+        to_delete_ids = []
+        for row in rows:
+            try:
+                created_at = datetime.fromisoformat(str(row["created_at"]))
+            except (TypeError, ValueError):
+                to_delete_ids.append(int(row["id"]))
+                continue
+
+            payload_raw = row["payload_json"] or "{}"
+            try:
+                payload = json.loads(payload_raw)
+            except json.JSONDecodeError:
+                payload = {}
+
+            source = str(payload.get("source") or "retrieval").strip().lower()
+            is_pinned = bool(payload.get("pinned", False))
+
+            if source == "manual_upload":
+                if is_pinned:
+                    continue
+                if created_at < upload_cutoff:
+                    to_delete_ids.append(int(row["id"]))
+            elif created_at < retrieval_cutoff:
+                to_delete_ids.append(int(row["id"]))
+
+        for file_id in to_delete_ids:
+            conn.execute("DELETE FROM generated_files WHERE id = ?", (file_id,))
+
         conn.commit()
+    finally:
+        conn.close()
+
+
+def list_manual_upload_runs_for_user(user_id, limit=50):
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT r.job_id, r.created_at, r.payload_json,
+                   g.file_name, g.file_key
+            FROM retrieval_runs r
+            LEFT JOIN generated_files g
+              ON g.job_id = r.job_id
+             AND g.user_id = r.user_id
+            WHERE r.user_id = ?
+            ORDER BY r.created_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    grouped = {}
+    for row in rows:
+        payload_raw = row["payload_json"] or "{}"
+        try:
+            payload = json.loads(payload_raw)
+        except json.JSONDecodeError:
+            payload = {}
+
+        if str(payload.get("source") or "").strip().lower() != "manual_upload":
+            continue
+
+        job_id = row["job_id"]
+        item = grouped.get(job_id)
+        if not item:
+            item = {
+                "job_id": job_id,
+                "created_at": row["created_at"],
+                "original_name": payload.get("original_name") or "",
+                "pinned": bool(payload.get("pinned", False)),
+                "file_keys": set(),
+                "file_names": set(),
+            }
+            grouped[job_id] = item
+
+        if row["file_key"]:
+            item["file_keys"].add(str(row["file_key"]))
+        if row["file_name"]:
+            item["file_names"].add(str(row["file_name"]))
+
+        if not item["original_name"]:
+            item["original_name"] = row["file_name"] or ""
+
+    out = []
+    for item in grouped.values():
+        out.append(
+            {
+                "job_id": item["job_id"],
+                "created_at": item["created_at"],
+                "original_name": item["original_name"],
+                "pinned": bool(item["pinned"]),
+                "file_keys": sorted(item["file_keys"]),
+                "file_names": sorted(item["file_names"]),
+            }
+        )
+
+    out.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    return out[: max(1, int(limit or 50))]
+
+
+def set_manual_upload_pinned(user_id, job_id, pinned):
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT payload_json FROM retrieval_runs WHERE user_id = ? AND job_id = ?",
+            (user_id, job_id),
+        ).fetchone()
+        if not row:
+            return False
+
+        payload_raw = row["payload_json"] or "{}"
+        try:
+            payload = json.loads(payload_raw)
+        except json.JSONDecodeError:
+            payload = {}
+
+        if str(payload.get("source") or "").strip().lower() != "manual_upload":
+            return False
+
+        payload["pinned"] = bool(pinned)
+        conn.execute(
+            "UPDATE retrieval_runs SET payload_json = ? WHERE user_id = ? AND job_id = ?",
+            (json.dumps(payload), user_id, job_id),
+        )
+        conn.commit()
+        return True
     finally:
         conn.close()
 
@@ -440,7 +952,10 @@ def get_portal_credentials(user_id):
     if not row:
         return None
 
-    password = _FERNET.decrypt(row["portal_password_encrypted"].encode("utf-8")).decode("utf-8")
+    try:
+        password = _FERNET.decrypt(row["portal_password_encrypted"].encode("utf-8")).decode("utf-8")
+    except InvalidToken as exc:
+        raise CredentialDecryptionError("Saved portal credentials could not be decrypted") from exc
     return {
         "portal_username": row["portal_username"],
         "portal_password": password,
@@ -508,7 +1023,7 @@ def get_app_user_by_email(email):
     try:
         row = conn.execute(
             """
-            SELECT user_id, password_hash, role, is_active, failed_attempts, locked_until, must_change_password, password_changed_at, email, updated_at
+            SELECT user_id, password_hash, role, is_active, failed_attempts, locked_until, must_change_password, password_changed_at, email, company_name, company_address, company_phone, company_logo_path, updated_at
             FROM app_users
             WHERE lower(coalesce(email, '')) = ?
             """,
@@ -525,7 +1040,7 @@ def get_app_user(user_id):
     try:
         row = conn.execute(
             """
-            SELECT user_id, password_hash, role, is_active, failed_attempts, locked_until, must_change_password, password_changed_at, email, updated_at
+            SELECT user_id, password_hash, role, is_active, failed_attempts, locked_until, must_change_password, password_changed_at, email, company_name, company_address, company_phone, company_logo_path, updated_at
             FROM app_users
             WHERE user_id = ?
             """,
@@ -589,7 +1104,7 @@ def list_app_users():
     try:
         rows = conn.execute(
             """
-            SELECT user_id, role, is_active, failed_attempts, locked_until, must_change_password, password_changed_at, email, updated_at
+            SELECT user_id, role, is_active, failed_attempts, locked_until, must_change_password, password_changed_at, email, company_name, company_address, company_phone, company_logo_path, updated_at
             FROM app_users
             ORDER BY user_id ASC
             """
@@ -667,12 +1182,39 @@ def set_user_email(user_id, email):
         conn.close()
 
 
+def set_user_company_profile(user_id, company_name=None, company_address=None, company_phone=None, company_logo_path=None):
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            UPDATE app_users
+            SET company_name = ?, company_address = ?, company_phone = ?, company_logo_path = ?, updated_at = ?
+            WHERE user_id = ?
+            """,
+            (
+                (company_name or "").strip() or None,
+                (company_address or "").strip() or None,
+                (company_phone or "").strip() or None,
+                (company_logo_path or "").strip() or None,
+                datetime.now(timezone.utc).isoformat(),
+                user_id,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def delete_app_user(user_id):
     conn = _connect()
     try:
         conn.execute("DELETE FROM generated_files WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM retrieval_runs WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM portal_credentials WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM account_alias_rules WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM account_custom_names WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM account_pricing_profiles WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM account_pricing_rate_history WHERE user_id = ?", (user_id,))
         cursor = conn.execute("DELETE FROM app_users WHERE user_id = ?", (user_id,))
         conn.commit()
         return int(cursor.rowcount or 0)

@@ -17,6 +17,41 @@
     </section>
 
     <section class="card">
+      <h2>Company Profile</h2>
+      <p class="note">These details appear as a heading in account report view and PDF downloads.</p>
+      <form method="post" action="{{ url_for('profile_company_update') }}" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="grid">
+          <div class="field">
+            <label>Company Name</label>
+            <input name="company_name" type="text" value="{{ (company_profile.name if company_profile else '') }}" maxlength="180">
+          </div>
+          <div class="field">
+            <label>Telephone</label>
+            <input name="company_phone" type="text" value="{{ (company_profile.phone if company_profile else '') }}" maxlength="80">
+          </div>
+          <div class="field field-span-2">
+            <label>Address</label>
+            <textarea name="company_address" rows="3" maxlength="500">{{ (company_profile.address if company_profile else '') }}</textarea>
+          </div>
+          <div class="field field-span-2">
+            <label>Company Logo (optional)</label>
+            <input name="company_logo" type="file" accept=".png,.jpg,.jpeg,.gif,.webp">
+            {% if company_profile and company_profile.logo_path %}
+            <div class="logo-preview-wrap">
+              <img src="/{{ company_profile.logo_path }}" alt="Company logo" class="logo-preview">
+              <label class="inline-check"><input type="checkbox" name="clear_company_logo" value="1"> Remove existing logo</label>
+            </div>
+            {% endif %}
+          </div>
+        </div>
+        <div class="actions-row">
+          <button type="submit">Save Company Profile</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="card">
       <h2>Change Password</h2>
       {% if password_policy and password_policy.expired %}
       <p class="note">Your password has expired. Update it now to continue using the app.</p>

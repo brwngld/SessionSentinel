@@ -31,12 +31,46 @@ label {
   color: var(--muted);
 }
 
-input[type="password"] {
+input[type="password"],
+input[type="text"],
+textarea,
+input[type="file"] {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 12px;
   font-size: 0.95rem;
   background: #fff;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.field-span-2 {
+  grid-column: 1 / -1;
+}
+
+.logo-preview-wrap {
+  margin-top: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.logo-preview {
+  max-width: 220px;
+  max-height: 90px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  padding: 6px;
+}
+
+.inline-check {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.9rem;
 }
 
 .actions-row {
