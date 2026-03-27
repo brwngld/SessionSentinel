@@ -151,8 +151,7 @@ def _ensure_db_initialized():
         
         _db_setup_done = True
     except Exception as e:
-        app.logger.error(f"Database initialization failed: {e}")
-        raise
+        app.logger.error(f"Database initialization failed on request: {e}", exc_info=True)
 
 
 class AppUser(UserMixin):
