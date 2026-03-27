@@ -7,6 +7,20 @@ name = "sessionsentinel"
 version = "1.0.0"
 description = "SessionSentinel Flask application"
 requires-python = ">=3.10"
+dependencies = [
+	"Flask==3.1.3",
+	"Flask-Login==0.6.3",
+	"Werkzeug==3.1.7",
+	"selenium==4.41.0",
+	"pandas==3.0.1",
+	"fpdf2==2.8.7",
+	"python-docx==1.2.0",
+	"openpyxl==3.1.5",
+	"requests==2.32.5",
+	"cryptography==46.0.5",
+	"python-dotenv==1.2.2",
+	"libsql-client==0.3.1",
+]
 
 [project.scripts]
 app = "flask_app:app"
