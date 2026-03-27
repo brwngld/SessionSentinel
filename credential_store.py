@@ -87,9 +87,17 @@ class _EmptyResultSet:
 
 class _LibsqlConnection:
     def __init__(self, db_url, auth_token):
-        self._client = create_client_sync(url=db_url, auth_token=auth_token)
-        self._transaction = self._client.transaction()
+        self._db_url = db_url
+        self._auth_token = auth_token
+        self._client = None
+        self._transaction = None
         self.row_factory = None
+    
+    def _ensure_connected(self):
+        """Lazily connect on first use"""
+        if self._client is None:
+            self._client = create_client_sync(url=self._db_url, auth_token=self._auth_token)
+            self._transaction = self._client.transaction()
 
     def _normalize_params(self, params):
         if params is None:
@@ -99,16 +107,20 @@ class _LibsqlConnection:
         return params
 
     def execute(self, sql, params=()):
+        self._ensure_connected()
         result = self._transaction.execute(sql, self._normalize_params(params))
         return _ResultCursor(result)
 
     def executemany(self, sql, seq_of_params):
+        self._ensure_connected()
         last_cursor = _ResultCursor(_EmptyResultSet())
         for params in seq_of_params:
             last_cursor = self.execute(sql, params)
         return last_cursor
 
     def commit(self):
+        if self._client is None:
+            return
         if self._transaction is None:
             return
         self._transaction.commit()
@@ -116,6 +128,8 @@ class _LibsqlConnection:
         self._transaction = self._client.transaction()
 
     def rollback(self):
+        if self._client is None:
+            return
         if self._transaction is None:
             return
         try:
@@ -143,10 +157,12 @@ class _LibsqlConnection:
             except Exception:
                 pass
             self._transaction = None
-        try:
-            self._client.close()
-        except Exception:
-            pass
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+            self._client = None
 
 
 def _connect():
