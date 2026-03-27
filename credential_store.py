@@ -53,6 +53,9 @@ def _build_fernet():
 
 _FERNET = _build_fernet()
 
+_db_initialized = False
+_db_init_lock = __import__('threading').Lock()
+
 
 class _ResultCursor:
     def __init__(self, result_set):
@@ -115,17 +118,35 @@ class _LibsqlConnection:
     def rollback(self):
         if self._transaction is None:
             return
-        self._transaction.rollback()
-        self._transaction.close()
-        self._transaction = self._client.transaction()
+        try:
+            self._transaction.rollback()
+        except Exception:
+            pass
+        try:
+            self._transaction.close()
+        except Exception:
+            pass
+        try:
+            self._transaction = self._client.transaction()
+        except Exception:
+            self._transaction = None
 
     def close(self):
         if self._transaction is not None:
-            if not self._transaction.closed:
-                self._transaction.rollback()
-            self._transaction.close()
+            try:
+                if not self._transaction.closed:
+                    self._transaction.rollback()
+            except Exception:
+                pass
+            try:
+                self._transaction.close()
+            except Exception:
+                pass
             self._transaction = None
-        self._client.close()
+        try:
+            self._client.close()
+        except Exception:
+            pass
 
 
 def _connect():
@@ -314,6 +335,26 @@ def init_db():
         conn.commit()
     finally:
         conn.close()
+
+
+def ensure_db_initialized():
+    """Lazily initialize the database. Safe to call multiple times."""
+    global _db_initialized
+    
+    if _db_initialized:
+        return
+    
+    with _db_init_lock:
+        if _db_initialized:
+            return
+        
+        try:
+            init_db()
+            _db_initialized = True
+        except Exception as e:
+            import logging
+            logging.warning(f"Failed to initialize database on first request: {e}")
+            raise
 
 
 def upsert_account_alias_rule(user_id, ref_key, canonical_account, decision_type="accept"):

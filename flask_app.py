@@ -52,6 +52,7 @@ from credential_store import (
     delete_retrieval_run,
     delete_portal_credentials,
     ensure_app_user,
+    ensure_db_initialized,
     get_generated_file,
     get_app_user,
     get_app_user_by_email,
@@ -124,18 +125,34 @@ login_manager = LoginManager()
 login_manager.login_view = "login"
 login_manager.init_app(app)
 app.logger.info(_startup_db_message())
-init_db()
-if APP_ADMIN_PASSWORD_HASH and not APP_ADMIN_PASSWORD_HASH.startswith("replace-"):
-    ensure_app_user(APP_ADMIN_USER, APP_ADMIN_PASSWORD_HASH, role="admin", is_active=True)
-
-# Keep the configured primary admin account privileged, even for existing DB rows.
-existing_admin = get_app_user(APP_ADMIN_USER)
-if existing_admin:
-    set_user_role(APP_ADMIN_USER, "admin")
 
 _jobs = {}
 _jobs_lock = threading.Lock()
 _job_cancel_events = {}
+
+_db_setup_done = False
+
+
+@app.before_request
+def _ensure_db_initialized():
+    global _db_setup_done
+    if _db_setup_done:
+        return
+    
+    try:
+        ensure_db_initialized()
+        
+        if APP_ADMIN_PASSWORD_HASH and not APP_ADMIN_PASSWORD_HASH.startswith("replace-"):
+            ensure_app_user(APP_ADMIN_USER, APP_ADMIN_PASSWORD_HASH, role="admin", is_active=True)
+        
+        existing_admin = get_app_user(APP_ADMIN_USER)
+        if existing_admin:
+            set_user_role(APP_ADMIN_USER, "admin")
+        
+        _db_setup_done = True
+    except Exception as e:
+        app.logger.error(f"Database initialization failed: {e}")
+        raise
 
 
 class AppUser(UserMixin):
