@@ -34,3 +34,4 @@ screenshots/
 .DS_Store
 Thumbs.db
 .vscode/
+.vercel/
