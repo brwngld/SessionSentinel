@@ -86,4 +86,10 @@ if DB_BACKEND == "turso":
 		raise RuntimeError("DB_BACKEND=turso requires SESSION_COOKIE_SECURE=true.")
 
 screenshot_dir = os.getenv("SCREENSHOT_DIR", "screenshots")
-os.makedirs(screenshot_dir, exist_ok=True)
+try:
+	os.makedirs(screenshot_dir, exist_ok=True)
+except OSError:
+	# Vercel runtime filesystem is read-only except /tmp.
+	fallback_screenshot_dir = os.path.join("/tmp", "screenshots")
+	os.makedirs(fallback_screenshot_dir, exist_ok=True)
+	screenshot_dir = fallback_screenshot_dir

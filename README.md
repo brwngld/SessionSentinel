@@ -59,6 +59,8 @@ Set database backend explicitly:
 - Local (default): `DB_BACKEND=sqlite` and `DATABASE_PATH=app.db`
 - Turso (production): `DB_BACKEND=turso` with `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`
 
+On Vercel, the deployment filesystem is read-only except `/tmp`. If you store runtime screenshots, set `SCREENSHOT_DIR=/tmp/screenshots`.
+
 The app now fails fast at startup if `DB_BACKEND` is invalid or if Turso credentials are missing while `DB_BACKEND=turso`.
 In Turso mode it also fails fast when `FLASK_SECRET_KEY` or `APP_ADMIN_PASSWORD_HASH` are placeholders, or if `SESSION_COOKIE_SECURE` is not `true`.
 
