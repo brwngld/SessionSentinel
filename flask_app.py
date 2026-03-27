@@ -20,6 +20,8 @@ from config import (
     APP_ADMIN_USER,
     ALLOW_DEV_ADMIN_SETUP,
     CREDENTIAL_ENCRYPTION_KEY,
+    DATABASE_PATH,
+    DB_BACKEND,
     DEFAULT_END_DATE,
     DEFAULT_PAGE_SIZE,
     DEFAULT_START_DATE,
@@ -34,6 +36,7 @@ from config import (
     MANUAL_UPLOAD_RETENTION_DAYS,
     SESSION_COOKIE_SECURE,
     SESSION_TIMEOUT_MINUTES,
+    TURSO_DATABASE_URL,
     PASSWORD_MAX_AGE_DAYS_ADMIN,
     PASSWORD_MAX_AGE_DAYS_USER,
     PASSWORD_EXPIRY_WARNING_DAYS,
@@ -108,9 +111,19 @@ app.config["REMEMBER_COOKIE_HTTPONLY"] = True
 app.config["REMEMBER_COOKIE_DURATION"] = timedelta(days=REMEMBER_ME_DAYS)
 app.permanent_session_lifetime = timedelta(minutes=SESSION_TIMEOUT_MINUTES)
 
+
+def _startup_db_message():
+    if DB_BACKEND == "sqlite":
+        db_path = DATABASE_PATH if os.path.isabs(DATABASE_PATH) else os.path.abspath(DATABASE_PATH)
+        return f"[startup] DB backend: sqlite | path={db_path}"
+
+    turso_target = TURSO_DATABASE_URL or "<missing>"
+    return f"[startup] DB backend: turso | url={turso_target}"
+
 login_manager = LoginManager()
 login_manager.login_view = "login"
 login_manager.init_app(app)
+app.logger.info(_startup_db_message())
 init_db()
 if APP_ADMIN_PASSWORD_HASH and not APP_ADMIN_PASSWORD_HASH.startswith("replace-"):
     ensure_app_user(APP_ADMIN_USER, APP_ADMIN_PASSWORD_HASH, role="admin", is_active=True)

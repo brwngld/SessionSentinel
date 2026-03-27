@@ -1,4 +1,3 @@
-import base64
 import json
 import os
 import sqlite3
@@ -7,7 +6,19 @@ from datetime import datetime, timedelta, timezone
 from cryptography.fernet import Fernet
 from cryptography.fernet import InvalidToken
 
-from config import ALLOW_DEV_ADMIN_SETUP, CREDENTIAL_ENCRYPTION_KEY, DATABASE_PATH
+from config import (
+    ALLOW_DEV_ADMIN_SETUP,
+    CREDENTIAL_ENCRYPTION_KEY,
+    DATABASE_PATH,
+    DB_BACKEND,
+    TURSO_AUTH_TOKEN,
+    TURSO_DATABASE_URL,
+)
+
+try:
+    from libsql_client import create_client_sync
+except Exception:  # pragma: no cover - import depends on selected backend
+    create_client_sync = None
 
 DB_PATH = DATABASE_PATH if os.path.isabs(DATABASE_PATH) else os.path.join(os.path.dirname(__file__), DATABASE_PATH)
 DB_DIR = os.path.dirname(DB_PATH)
@@ -35,21 +46,98 @@ def _build_fernet():
     try:
         return Fernet(key.encode("utf-8"))
     except Exception:
-        if not ALLOW_DEV_ADMIN_SETUP:
-            raise RuntimeError(
-                "Refusing startup: CREDENTIAL_ENCRYPTION_KEY must be a valid Fernet key in non-dev mode."
-            )
-        derived = base64.urlsafe_b64encode(key.encode("utf-8").ljust(32, b"0")[:32])
-        return Fernet(derived)
+        raise RuntimeError(
+            "Refusing startup: CREDENTIAL_ENCRYPTION_KEY must be a valid Fernet key."
+        )
 
 
 _FERNET = _build_fernet()
 
 
+class _ResultCursor:
+    def __init__(self, result_set):
+        self._rows = list(result_set.rows)
+        self._index = 0
+        self.rowcount = int(getattr(result_set, "rows_affected", 0) or 0)
+        self.lastrowid = getattr(result_set, "last_insert_rowid", None)
+
+    def fetchone(self):
+        if self._index >= len(self._rows):
+            return None
+        row = self._rows[self._index]
+        self._index += 1
+        return row
+
+    def fetchall(self):
+        if self._index >= len(self._rows):
+            return []
+        rows = self._rows[self._index :]
+        self._index = len(self._rows)
+        return rows
+
+
+class _EmptyResultSet:
+    rows = []
+    rows_affected = 0
+    last_insert_rowid = None
+
+
+class _LibsqlConnection:
+    def __init__(self, db_url, auth_token):
+        self._client = create_client_sync(url=db_url, auth_token=auth_token)
+        self._transaction = self._client.transaction()
+        self.row_factory = None
+
+    def _normalize_params(self, params):
+        if params is None:
+            return []
+        if isinstance(params, tuple):
+            return list(params)
+        return params
+
+    def execute(self, sql, params=()):
+        result = self._transaction.execute(sql, self._normalize_params(params))
+        return _ResultCursor(result)
+
+    def executemany(self, sql, seq_of_params):
+        last_cursor = _ResultCursor(_EmptyResultSet())
+        for params in seq_of_params:
+            last_cursor = self.execute(sql, params)
+        return last_cursor
+
+    def commit(self):
+        if self._transaction is None:
+            return
+        self._transaction.commit()
+        self._transaction.close()
+        self._transaction = self._client.transaction()
+
+    def rollback(self):
+        if self._transaction is None:
+            return
+        self._transaction.rollback()
+        self._transaction.close()
+        self._transaction = self._client.transaction()
+
+    def close(self):
+        if self._transaction is not None:
+            if not self._transaction.closed:
+                self._transaction.rollback()
+            self._transaction.close()
+            self._transaction = None
+        self._client.close()
+
+
 def _connect():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    if DB_BACKEND == "sqlite":
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    if create_client_sync is None:
+        raise RuntimeError("DB_BACKEND=turso requires the 'libsql-client' package to be installed.")
+
+    return _LibsqlConnection(TURSO_DATABASE_URL, TURSO_AUTH_TOKEN)
 
 
 def init_db():
