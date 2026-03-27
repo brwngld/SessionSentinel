@@ -158,7 +158,12 @@ def _connect():
     if create_client_sync is None:
         raise RuntimeError("DB_BACKEND=turso requires the 'libsql-client' package to be installed.")
 
-    return _LibsqlConnection(TURSO_DATABASE_URL, TURSO_AUTH_TOKEN)
+    try:
+        return _LibsqlConnection(TURSO_DATABASE_URL, TURSO_AUTH_TOKEN)
+    except Exception as e:
+        import logging
+        logging.error(f"Failed to create Turso connection: {e}")
+        raise
 
 
 def init_db():
@@ -354,7 +359,8 @@ def ensure_db_initialized():
         except Exception as e:
             import logging
             logging.warning(f"Failed to initialize database on first request: {e}")
-            raise
+            # Don't raise - let the app continue without DB
+            # Routes that need DB will fail gracefully
 
 
 def upsert_account_alias_rule(user_id, ref_key, canonical_account, decision_type="accept"):
