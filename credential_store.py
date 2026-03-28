@@ -79,7 +79,7 @@ def _get_cached_connection():
     
     with _db_pool_lock:
         if pool_key not in _db_pool:
-            _db_pool[pool_key] = _connect()
+            _db_pool[pool_key] = _connect_direct()
         return _db_pool[pool_key]
 
 
@@ -114,11 +114,25 @@ class _Row(dict):
 
 class _ResultCursor:
     def __init__(self, result_set, column_names=None):
-        self._rows = list(result_set.rows) if hasattr(result_set, 'rows') else list(result_set)
+        self._rows = []
         self._column_names = column_names or []
         self._index = 0
         self.rowcount = int(getattr(result_set, "rows_affected", 0) or 0)
         self.lastrowid = getattr(result_set, "last_insert_rowid", None)
+        
+        # Extract rows from result set (handles both libsql and sqlite3)
+        if hasattr(result_set, 'rows'):
+            # libsql result
+            self._rows = list(result_set.rows)
+        elif hasattr(result_set, 'fetchall'):
+            # sqlite3 cursor
+            self._rows = result_set.fetchall()
+        else:
+            # Try to iterate directly
+            try:
+                self._rows = list(result_set)
+            except TypeError:
+                self._rows = []
         
         # Convert tuples to dict-like rows if we have column names
         if self._column_names and self._rows:
