@@ -1,6 +1,8 @@
 import json
+import logging
 import os
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 
 from cryptography.fernet import Fernet
@@ -31,6 +33,9 @@ DB_DIR = os.path.dirname(DB_PATH)
 if DB_DIR:
     os.makedirs(DB_DIR, exist_ok=True)
 
+# Flag to only clean metadata once on first connection
+_metadata_cleaned = False
+
 
 class CredentialDecryptionError(Exception):
     """Raised when saved portal credentials cannot be decrypted with active key."""
@@ -60,8 +65,7 @@ def _build_fernet():
 _FERNET = _build_fernet()
 
 _db_initialized = False
-_db_init_lock = __import__('threading').Lock()
-
+_db_init_lock = threading.Lock()
 
 class _LibsqlConnectionWrapper:
     """Wrapper around libsql connection to support dict-like row access via row_factory simulation."""
@@ -71,7 +75,6 @@ class _LibsqlConnectionWrapper:
     def execute(self, sql, params=()):
         """Execute and return cursor that wraps result in dict-like rows."""
         result = self._conn.execute(sql, params)
-        # Wrap result to provide dict-like row access
         return _LibsqlCursor(result)
     
     def executemany(self, sql, params_list):
@@ -81,8 +84,16 @@ class _LibsqlConnectionWrapper:
     
     def commit(self):
         """Commit changes."""
+        if DB_BACKEND == "turso":
+            return
         if hasattr(self._conn, 'commit'):
-            self._conn.commit()
+            try:
+                self._conn.commit()
+            except Exception as exc:
+                if "stream not found" in str(exc).lower():
+                    logging.warning("Ignoring Turso commit stream reset after write: %s", exc)
+                    return
+                raise
     
     def rollback(self):
         """Rollback changes."""
@@ -100,6 +111,12 @@ class _LibsqlConnectionWrapper:
         except Exception:
             pass
 
+    # 🔥 Add this to fix your sync issue
+    def sync(self):
+        """Sync connection with Turso."""
+        if hasattr(self._conn, "sync"):
+            return self._conn.sync()
+
 
 class _LibsqlCursor:
     """Cursor wrapper that provides dict-like access to libsql results."""
@@ -110,7 +127,8 @@ class _LibsqlCursor:
         self.rowcount = int(getattr(result, "rows_affected", 0) or 0)
         self.lastrowid = getattr(result, "last_insert_rowid", None)
         
-        # Cache all rows upfront - handle both libsql tuples and columns
+        # Cache all rows upfront - handle both libsql result objects and
+        # DB-API-style cursor objects returned by some libsql versions.
         if hasattr(result, 'rows') and hasattr(result, 'columns'):
             # libsql: rows are tuples, columns are list of names
             cols = result.columns if result.columns else []
@@ -124,6 +142,15 @@ class _LibsqlCursor:
         elif hasattr(result, 'rows'):
             # libsql without columns - just return tuples
             self._rows = list(result.rows)
+        elif hasattr(result, "fetchall"):
+            fetched_rows = result.fetchall() or []
+            description = getattr(result, "description", None) or []
+            cols = [col[0] for col in description if col and col[0]]
+            if cols:
+                for row_tuple in fetched_rows:
+                    self._rows.append({col: val for col, val in zip(cols, row_tuple)})
+            else:
+                self._rows = list(fetched_rows)
     
     def fetchone(self):
         """Fetch one row."""
@@ -140,295 +167,282 @@ class _LibsqlCursor:
         return rows
 
 
+def _connect_legacy_unused():
+    import libsql
+    import os
+
+    if DB_BACKEND != "turso":
+        raise RuntimeError("Only Turso is allowed in this mode")
+
+    if not TURSO_DATABASE_URL or not TURSO_AUTH_TOKEN:
+        raise RuntimeError("Missing Turso credentials")
+
+    # Decide path based on environment
+    if os.getenv("VERCEL"):
+        db_path = "/tmp/local.db"
+    else:
+        db_path = "local.db"
+
+    print("🌐 Connecting to Turso:", TURSO_DATABASE_URL)
+    print("📁 Local sync file:", db_path)
+
+    conn = libsql.connect(
+        db_path,
+        sync_url=TURSO_DATABASE_URL,
+        auth_token=TURSO_AUTH_TOKEN
+    )
+
+    try:
+        conn.sync()
+        print("✅ Turso sync successful")
+    except Exception as e:
+        print("❌ Turso sync failed:", e)
+
+    return _LibsqlConnectionWrapper(conn)
+
+
+
+def init_db_legacy_unused():
+    conn = _connect()
+
+    try:
+        print("🚀 Initializing Turso database...")
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS app_users (
+            user_id TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            failed_attempts INTEGER NOT NULL DEFAULT 0,
+            locked_until TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """)
+
+        conn.commit()
+
+
+        print("✅ Tables ensured")
+
+    finally:
+        conn.close()
+
 def _connect():
-    """Create a new database connection."""
     if DB_BACKEND == "sqlite":
-        # Use libsql if available (with sync), otherwise fall back to sqlite3
-        if libsql is not None and TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
-            try:
-                # Use libsql with local SQLite synced to Turso
-                conn = libsql.connect(
-                    DB_PATH,
-                    sync_url=TURSO_DATABASE_URL,
-                    auth_token=TURSO_AUTH_TOKEN,
-                    sync_interval=60  # Sync every 60 seconds
-                )
-                return _LibsqlConnectionWrapper(conn)
-            except Exception as e:
-                import logging
-                logging.warning(f"Failed to connect to Turso, falling back to local SQLite: {e}")
-                # Fall through to regular sqlite3 connection
-        
-        # Regular SQLite connection
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         return conn
 
-    if DB_BACKEND == "turso":
-        if libsql is None:
-            raise RuntimeError("DB_BACKEND=turso requires the 'libsql' package. Install with: pip install libsql")
-        
-        if not TURSO_DATABASE_URL:
-            raise RuntimeError("DB_BACKEND=turso requires TURSO_DATABASE_URL environment variable")
-        
-        if not TURSO_AUTH_TOKEN:
-            raise RuntimeError("DB_BACKEND=turso requires TURSO_AUTH_TOKEN environment variable")
-        
-        try:
-            # Try to connect with sync enabled (local file synced to Turso)
-            conn = libsql.connect(
-                DB_PATH,
-                sync_url=TURSO_DATABASE_URL,
-                auth_token=TURSO_AUTH_TOKEN,
-                sync_interval=60
-            )
-            return _LibsqlConnectionWrapper(conn)
-        except Exception as e:
-            import logging
-            logging.warning(f"Failed to connect to Turso with sync: {e}")
-            
-            # If sync fails (e.g., on Vercel due to read-only fs), use remote-only mode
-            try:
-                logging.info("Attempting Turso remote-only mode (no local sync)...")
-                conn = libsql.connect(
-                    sync_url=TURSO_DATABASE_URL,
-                    auth_token=TURSO_AUTH_TOKEN
-                )
-                return _LibsqlConnectionWrapper(conn)
-            except Exception as e2:
-                logging.error(f"Failed to connect to Turso remote-only: {e2}")
-                # Last resort: fallback local SQLite
-                try:
-                    logging.warning("Falling back to local SQLite only (no Turso sync)")
-                    fallback_path = "/tmp/app.db"
-                    conn = sqlite3.connect(fallback_path)
-                    conn.row_factory = sqlite3.Row
-                    return conn
-                except Exception as e3:
-                    logging.error(f"Failed to connect to fallback database: {e3}")
-                    # In-memory SQLite as last resort
-                    conn = sqlite3.connect(":memory:")
-                    conn.row_factory = sqlite3.Row
-                    return conn
-    
-    raise RuntimeError(f"Invalid DB_BACKEND: {DB_BACKEND}")
+    if DB_BACKEND != "turso":
+        raise RuntimeError(f"Unsupported DB_BACKEND: {DB_BACKEND}")
 
+    if libsql is None:
+        raise RuntimeError("DB_BACKEND=turso requires the libsql package to be installed.")
+
+    if not TURSO_DATABASE_URL or not TURSO_AUTH_TOKEN:
+        raise RuntimeError("Missing Turso credentials")
+
+    logging.info("Connecting to Turso at %s", TURSO_DATABASE_URL)
+    conn = libsql.connect(
+        database=TURSO_DATABASE_URL,
+        auth_token=TURSO_AUTH_TOKEN,
+        autocommit=True,
+    )
+
+    return _LibsqlConnectionWrapper(conn)
+
+
+def _sync_if_supported(conn):
+    sync = getattr(conn, "sync", None)
+    if callable(sync):
+        try:
+            sync()
+        except Exception as exc:
+            logging.warning("Skipping Turso sync after non-fatal sync error: %s", exc)
+
+
+def _ensure_column(conn, table_name, column_name, column_sql):
+    try:
+        columns = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    except Exception:
+        columns = []
+
+    existing_columns = set()
+    for row in columns:
+        try:
+            existing_columns.add(str(row["name"]).strip())
+        except Exception:
+            pass
+
+    if column_name in existing_columns:
+        return
+
+    try:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+    except Exception as exc:
+        # Turso/libsql can report duplicate-column errors even when PRAGMA
+        # metadata is stale or shaped differently than sqlite3.Row.
+        if "duplicate column name" in str(exc).lower():
+            return
+        raise
+
+
+def _create_schema(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_users (
+            user_id TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            failed_attempts INTEGER NOT NULL DEFAULT 0,
+            locked_until TEXT,
+            must_change_password INTEGER NOT NULL DEFAULT 0,
+            password_changed_at TEXT,
+            email TEXT,
+            company_name TEXT,
+            company_address TEXT,
+            company_phone TEXT,
+            company_logo_path TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    _ensure_column(conn, "app_users", "must_change_password", "must_change_password INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "app_users", "password_changed_at", "password_changed_at TEXT")
+    _ensure_column(conn, "app_users", "email", "email TEXT")
+    _ensure_column(conn, "app_users", "company_name", "company_name TEXT")
+    _ensure_column(conn, "app_users", "company_address", "company_address TEXT")
+    _ensure_column(conn, "app_users", "company_phone", "company_phone TEXT")
+    _ensure_column(conn, "app_users", "company_logo_path", "company_logo_path TEXT")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS portal_credentials (
+            user_id TEXT PRIMARY KEY,
+            portal_username TEXT NOT NULL,
+            portal_password_encrypted TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES app_users(user_id) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS auth_audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_time TEXT NOT NULL,
+            user_id TEXT,
+            event_type TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            source_ip TEXT,
+            details TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS account_alias_rules (
+            user_id TEXT NOT NULL,
+            ref_key TEXT NOT NULL,
+            canonical_account TEXT NOT NULL,
+            decision_type TEXT NOT NULL DEFAULT 'accept',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, ref_key)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS account_custom_names (
+            user_id TEXT NOT NULL,
+            account_name TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, account_name)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS account_pricing_profiles (
+            user_id TEXT NOT NULL,
+            job_id TEXT NOT NULL,
+            file_key TEXT NOT NULL,
+            account_name TEXT NOT NULL,
+            pricing_mode TEXT NOT NULL DEFAULT 'none',
+            fixed_price REAL NOT NULL DEFAULT 0,
+            line_prices_json TEXT NOT NULL DEFAULT '{}',
+            currency_code TEXT NOT NULL DEFAULT 'GHS',
+            manual_rate REAL,
+            conversion_note TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, job_id, file_key, account_name)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS account_pricing_rate_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            job_id TEXT NOT NULL,
+            file_key TEXT NOT NULL,
+            account_name TEXT NOT NULL,
+            pricing_mode TEXT NOT NULL DEFAULT 'none',
+            currency_code TEXT NOT NULL DEFAULT 'GHS',
+            manual_rate REAL,
+            conversion_note TEXT NOT NULL DEFAULT '',
+            report_total REAL NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS retrieval_runs (
+            job_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            last_message TEXT,
+            row_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            ended_at TEXT,
+            payload_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS generated_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            file_key TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            file_blob BLOB NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(job_id, user_id, file_key)
+        )
+        """
+    )
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_app_users_email ON app_users(email)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_audit_log_user_time ON auth_audit_log(user_id, event_time DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_retrieval_runs_user_created ON retrieval_runs(user_id, created_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_generated_files_user_job ON generated_files(user_id, job_id)")
 
 
 def init_db():
     conn = _connect()
-    try:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS app_users (
-                user_id TEXT PRIMARY KEY,
-                password_hash TEXT NOT NULL,
-                role TEXT NOT NULL DEFAULT 'user',
-                is_active INTEGER NOT NULL DEFAULT 1,
-                failed_attempts INTEGER NOT NULL DEFAULT 0,
-                locked_until TEXT,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        existing_cols = {
-            row["name"] if isinstance(row, dict) else row[1]
-            for row in conn.execute("PRAGMA table_info(app_users)").fetchall()
-        }
-        # Wrap each ALTER in try-except to handle columns that already exist
-        # Only catch duplicate column errors; re-raise all other errors
-        if "role" not in existing_cols:
-            try:
-                conn.execute("ALTER TABLE app_users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
-            except Exception as e:
-                if "duplicate column name" not in str(e).lower():
-                    raise
-        if "is_active" not in existing_cols:
-            try:
-                conn.execute("ALTER TABLE app_users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
-            except Exception as e:
-                if "duplicate column name" not in str(e).lower():
-                    raise
-        if "must_change_password" not in existing_cols:
-            try:
-                conn.execute("ALTER TABLE app_users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0")
-            except Exception as e:
-                if "duplicate column name" not in str(e).lower():
-                    raise
-        if "password_changed_at" not in existing_cols:
-            try:
-                conn.execute("ALTER TABLE app_users ADD COLUMN password_changed_at TEXT")
-                conn.execute(
-                    "UPDATE app_users SET password_changed_at = ? WHERE password_changed_at IS NULL",
-                    (datetime.now(timezone.utc).isoformat(),),
-                )
-            except Exception as e:
-                if "duplicate column name" not in str(e).lower():
-                    raise
-        if "email" not in existing_cols:
-            try:
-                conn.execute("ALTER TABLE app_users ADD COLUMN email TEXT")
-            except Exception as e:
-                if "duplicate column name" not in str(e).lower():
-                    raise
-        if "company_name" not in existing_cols:
-            try:
-                conn.execute("ALTER TABLE app_users ADD COLUMN company_name TEXT")
-            except Exception as e:
-                if "duplicate column name" not in str(e).lower():
-                    raise
-        if "company_address" not in existing_cols:
-            try:
-                conn.execute("ALTER TABLE app_users ADD COLUMN company_address TEXT")
-            except Exception as e:
-                if "duplicate column name" not in str(e).lower():
-                    raise
-        if "company_phone" not in existing_cols:
-            try:
-                conn.execute("ALTER TABLE app_users ADD COLUMN company_phone TEXT")
-            except Exception as e:
-                if "duplicate column name" not in str(e).lower():
-                    raise
-        if "company_logo_path" not in existing_cols:
-            try:
-                conn.execute("ALTER TABLE app_users ADD COLUMN company_logo_path TEXT")
-            except Exception as e:
-                if "duplicate column name" not in str(e).lower():
-                    raise
 
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS portal_credentials (
-                user_id TEXT PRIMARY KEY,
-                portal_username TEXT NOT NULL,
-                portal_password_encrypted TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS auth_audit_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_time TEXT NOT NULL,
-                user_id TEXT,
-                event_type TEXT NOT NULL,
-                outcome TEXT NOT NULL,
-                source_ip TEXT,
-                details TEXT
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS retrieval_runs (
-                job_id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                status TEXT NOT NULL,
-                last_message TEXT,
-                row_count INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                ended_at TEXT,
-                payload_json TEXT
-            )
-            """
-        )
-        run_cols = {
-            row["name"] if isinstance(row, dict) else row[1]
-            for row in conn.execute("PRAGMA table_info(retrieval_runs)").fetchall()
-        }
-        if "payload_json" not in run_cols:
-            try:
-                conn.execute("ALTER TABLE retrieval_runs ADD COLUMN payload_json TEXT")
-            except Exception as e:
-                if "duplicate column name" not in str(e).lower():
-                    raise
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS generated_files (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                job_id TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                file_key TEXT NOT NULL,
-                file_name TEXT NOT NULL,
-                mime_type TEXT,
-                file_blob BLOB NOT NULL,
-                created_at TEXT NOT NULL,
-                UNIQUE(job_id, user_id, file_key)
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS account_alias_rules (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,
-                ref_key TEXT NOT NULL,
-                canonical_account TEXT NOT NULL,
-                decision_type TEXT NOT NULL DEFAULT 'accept',
-                updated_at TEXT NOT NULL,
-                UNIQUE(user_id, ref_key)
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS account_custom_names (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,
-                account_name TEXT NOT NULL COLLATE NOCASE,
-                updated_at TEXT NOT NULL,
-                UNIQUE(user_id, account_name)
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS account_pricing_profiles (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,
-                job_id TEXT NOT NULL,
-                file_key TEXT NOT NULL,
-                account_name TEXT NOT NULL COLLATE NOCASE,
-                pricing_mode TEXT NOT NULL DEFAULT 'none',
-                fixed_price REAL NOT NULL DEFAULT 0,
-                line_prices_json TEXT NOT NULL DEFAULT '{}',
-                currency_code TEXT NOT NULL DEFAULT 'GHS',
-                manual_rate REAL,
-                conversion_note TEXT,
-                updated_at TEXT NOT NULL,
-                UNIQUE(user_id, job_id, file_key, account_name)
-            )
-            """
-        )
-        pricing_cols = {
-            row["name"] if isinstance(row, dict) else row[1]
-            for row in conn.execute("PRAGMA table_info(account_pricing_profiles)").fetchall()
-        }
-        if "currency_code" not in pricing_cols:
-            conn.execute("ALTER TABLE account_pricing_profiles ADD COLUMN currency_code TEXT NOT NULL DEFAULT 'GHS'")
-        if "manual_rate" not in pricing_cols:
-            conn.execute("ALTER TABLE account_pricing_profiles ADD COLUMN manual_rate REAL")
-        if "conversion_note" not in pricing_cols:
-            conn.execute("ALTER TABLE account_pricing_profiles ADD COLUMN conversion_note TEXT")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS account_pricing_rate_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,
-                job_id TEXT NOT NULL,
-                file_key TEXT NOT NULL,
-                account_name TEXT NOT NULL COLLATE NOCASE,
-                pricing_mode TEXT NOT NULL,
-                currency_code TEXT NOT NULL,
-                manual_rate REAL,
-                conversion_note TEXT,
-                report_total REAL NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
+    try:
+        logging.info("Initializing database schema for backend=%s", DB_BACKEND)
+        _create_schema(conn)
         conn.commit()
+        _sync_if_supported(conn)
+        logging.info("Database schema ensured successfully")
     finally:
         conn.close()
 
@@ -448,10 +462,9 @@ def ensure_db_initialized():
             init_db()
             _db_initialized = True
         except Exception as e:
-            import logging
-            logging.warning(f"Failed to initialize database on first request: {e}")
-            # Don't raise - let the app continue without DB
-            # Routes that need DB will fail gracefully
+            logging.error(f"CRITICAL: Failed to initialize database: {e}", exc_info=True)
+            # RAISE the exception so we can see what's actually wrong
+            raise
 
 
 def upsert_account_alias_rule(user_id, ref_key, canonical_account, decision_type="accept"):
@@ -1236,6 +1249,9 @@ def ensure_app_user(
             (user_id, password_hash, normalized_role, active_value, must_change_value, changed_at, normalized_email, now),
         )
         conn.commit()
+        print(f"👤 Ensured user: {user_id}, role={normalized_role}, active={is_active}, must_change={must_change_password}")
+
+
     finally:
         conn.close()
 

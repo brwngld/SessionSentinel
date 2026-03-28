@@ -43,6 +43,7 @@ from config import (
 )
 from credential_store import (
     CredentialDecryptionError,
+    
     clear_failed_login,
     delete_app_user,
     get_account_alias_rules_for_user,
@@ -138,21 +139,29 @@ def _ensure_db_initialized():
     global _db_setup_done
     if _db_setup_done:
         return
-    
+
     try:
         ensure_db_initialized()
-        
-        if APP_ADMIN_PASSWORD_HASH and not APP_ADMIN_PASSWORD_HASH.startswith("replace-"):
-            ensure_app_user(APP_ADMIN_USER, APP_ADMIN_PASSWORD_HASH, role="admin", is_active=True)
-        
-        existing_admin = get_app_user(APP_ADMIN_USER)
-        if existing_admin:
-            set_user_role(APP_ADMIN_USER, "admin")
-        
-        _db_setup_done = True
-    except Exception as e:
-        app.logger.error(f"Database initialization failed on request: {e}", exc_info=True)
 
+        # 🔥 FORCE ADMIN CREATION
+        if APP_ADMIN_PASSWORD_HASH:
+            ensure_app_user(
+                APP_ADMIN_USER,
+                APP_ADMIN_PASSWORD_HASH,
+                role="admin",
+                is_active=True
+            )
+            print("✅ Admin user ensured")
+
+        # Debug check
+        user = get_app_user(APP_ADMIN_USER)
+        print("🔍 Admin lookup:", user)
+
+        _db_setup_done = True
+
+    except Exception as e:
+        print("❌ DB INIT ERROR:", e)
+        raise  # IMPORTANT: crash instead of hiding errors
 
 class AppUser(UserMixin):
     def __init__(self, user_id, role="user", is_active=True):
