@@ -63,12 +63,35 @@ _db_initialized = False
 _db_init_lock = __import__('threading').Lock()
 
 
+class _Row(dict):
+    """Dict-like row object that supports both dict and attribute access."""
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            # Support positional access like tuple
+            return list(dict.values(self))[key]
+        return dict.__getitem__(self, key)
+    
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(f"'_Row' object has no attribute '{name}'")
+
+
 class _ResultCursor:
-    def __init__(self, result_set):
-        self._rows = list(result_set.rows)
+    def __init__(self, result_set, column_names=None):
+        self._rows = list(result_set.rows) if hasattr(result_set, 'rows') else list(result_set)
+        self._column_names = column_names or []
         self._index = 0
         self.rowcount = int(getattr(result_set, "rows_affected", 0) or 0)
         self.lastrowid = getattr(result_set, "last_insert_rowid", None)
+        
+        # Convert tuples to dict-like rows if we have column names
+        if self._column_names and self._rows:
+            self._rows = [
+                _Row(dict(zip(self._column_names, row))) if isinstance(row, (tuple, list)) else row
+                for row in self._rows
+            ]
 
     def fetchone(self):
         if self._index >= len(self._rows):
@@ -91,6 +114,56 @@ class _EmptyResultSet:
     last_insert_rowid = None
 
 
+class _LibsqlConnectionWrapper:
+    """Wrapper around libsql connection that provides sqlite3-like interface with dict rows."""
+    def __init__(self, conn):
+        self._conn = conn
+        self._in_transaction = False
+    
+    def execute(self, sql, params=()):
+        """Execute query and return cursor with dict-like rows."""
+        result = self._conn.execute(sql, params)
+        
+        # Extract column names from the result
+        column_names = []
+        if hasattr(result, 'columns') and result.columns:
+            column_names = result.columns
+        
+        return _ResultCursor(result, column_names)
+    
+    def executemany(self, sql, params_list):
+        """Execute multiple queries."""
+        for params in params_list:
+            self._conn.execute(sql, params)
+    
+    def commit(self):
+        """Commit transaction."""
+        if hasattr(self._conn, 'commit'):
+            self._conn.commit()
+    
+    def rollback(self):
+        """Rollback transaction."""
+        if hasattr(self._conn, 'rollback'):
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass  # Some connections don't support rollback
+    
+    def close(self):
+        """Close connection."""
+        try:
+            if hasattr(self._conn, 'close'):
+                self._conn.close()
+        except Exception:
+            pass  # Ignore errors on close
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+
 def _connect():
     if DB_BACKEND == "sqlite":
         # Use libsql if available (with sync), otherwise fall back to sqlite3
@@ -103,8 +176,7 @@ def _connect():
                     auth_token=TURSO_AUTH_TOKEN,
                     sync_interval=60  # Sync every 60 seconds
                 )
-                conn.row_factory = sqlite3.Row
-                return conn
+                return _LibsqlConnectionWrapper(conn)
             except Exception as e:
                 import logging
                 logging.warning(f"Failed to connect to Turso, falling back to local SQLite: {e}")
@@ -126,34 +198,31 @@ def _connect():
             raise RuntimeError("DB_BACKEND=turso requires TURSO_AUTH_TOKEN environment variable")
         
         try:
-            # Try to connect with sync enabled
+            # Try to connect with sync enabled (local file synced to Turso)
             conn = libsql.connect(
                 DB_PATH,
                 sync_url=TURSO_DATABASE_URL,
                 auth_token=TURSO_AUTH_TOKEN,
                 sync_interval=60
             )
-            conn.row_factory = sqlite3.Row
-            return conn
+            return _LibsqlConnectionWrapper(conn)
         except Exception as e:
             import logging
             logging.warning(f"Failed to connect to Turso with sync: {e}")
             
-            # If sync fails (e.g., on Vercel due to read-only fs), try remote-only
+            # If sync fails (e.g., on Vercel due to read-only fs), try remote-only with local temp db
             try:
-                logging.info("Attempting remote-only connection to Turso...")
-                conn = libsql.connect(
-                    ":memory:",  # Use in-memory database, no sync
-                    sync_url=TURSO_DATABASE_URL,
-                    auth_token=TURSO_AUTH_TOKEN
-                )
+                logging.info("Attempting fallback to local SQLite with optional Turso sync...")
+                fallback_path = "/tmp/app.db"
+                conn = sqlite3.connect(fallback_path)
                 conn.row_factory = sqlite3.Row
+                logging.info(f"Connected to fallback database: {fallback_path}")
                 return conn
             except Exception as e2:
-                logging.error(f"Failed to connect to Turso (remote-only): {e2}")
-                # Last resort: use local SQLite only
-                logging.warning("Falling back to local SQLite only (no Turso sync)")
-                conn = sqlite3.connect(DB_PATH)
+                logging.error(f"Failed to connect to fallback database: {e2}")
+                # Last resort: use in-memory SQLite
+                logging.warning("Falling back to in-memory SQLite only (no persistence)")
+                conn = sqlite3.connect(":memory:")
                 conn.row_factory = sqlite3.Row
                 return conn
     
@@ -1047,7 +1116,7 @@ def delete_retrieval_run(user_id, job_id):
 
 def save_portal_credentials(user_id, portal_username, portal_password):
     encrypted = _FERNET.encrypt(portal_password.encode("utf-8")).decode("utf-8")
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
 
     conn = _connect()
     try:
