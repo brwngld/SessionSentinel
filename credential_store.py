@@ -187,21 +187,29 @@ def _connect():
             import logging
             logging.warning(f"Failed to connect to Turso with sync: {e}")
             
-            # If sync fails (e.g., on Vercel due to read-only fs), try remote-only with local temp db
+            # If sync fails (e.g., on Vercel due to read-only fs), use remote-only mode
             try:
-                logging.info("Attempting fallback to local SQLite with optional Turso sync...")
-                fallback_path = "/tmp/app.db"
-                conn = sqlite3.connect(fallback_path)
-                conn.row_factory = sqlite3.Row
-                logging.info(f"Connected to fallback database: {fallback_path}")
-                return conn
+                logging.info("Attempting Turso remote-only mode (no local sync)...")
+                conn = libsql.connect(
+                    sync_url=TURSO_DATABASE_URL,
+                    auth_token=TURSO_AUTH_TOKEN
+                )
+                return _LibsqlConnectionWrapper(conn)
             except Exception as e2:
-                logging.error(f"Failed to connect to fallback database: {e2}")
-                # Last resort: use in-memory SQLite
-                logging.warning("Falling back to in-memory SQLite only (no persistence)")
-                conn = sqlite3.connect(":memory:")
-                conn.row_factory = sqlite3.Row
-                return conn
+                logging.error(f"Failed to connect to Turso remote-only: {e2}")
+                # Last resort: fallback local SQLite
+                try:
+                    logging.warning("Falling back to local SQLite only (no Turso sync)")
+                    fallback_path = "/tmp/app.db"
+                    conn = sqlite3.connect(fallback_path)
+                    conn.row_factory = sqlite3.Row
+                    return conn
+                except Exception as e3:
+                    logging.error(f"Failed to connect to fallback database: {e3}")
+                    # In-memory SQLite as last resort
+                    conn = sqlite3.connect(":memory:")
+                    conn.row_factory = sqlite3.Row
+                    return conn
     
     raise RuntimeError(f"Invalid DB_BACKEND: {DB_BACKEND}")
 
@@ -224,7 +232,7 @@ def init_db():
             """
         )
         existing_cols = {
-            row["name"]
+            row["name"] if isinstance(row, dict) else row[1]
             for row in conn.execute("PRAGMA table_info(app_users)").fetchall()
         }
         if "role" not in existing_cols:
@@ -288,7 +296,7 @@ def init_db():
             """
         )
         run_cols = {
-            row["name"]
+            row["name"] if isinstance(row, dict) else row[1]
             for row in conn.execute("PRAGMA table_info(retrieval_runs)").fetchall()
         }
         if "payload_json" not in run_cols:
@@ -352,7 +360,7 @@ def init_db():
             """
         )
         pricing_cols = {
-            row["name"]
+            row["name"] if isinstance(row, dict) else row[1]
             for row in conn.execute("PRAGMA table_info(account_pricing_profiles)").fetchall()
         }
         if "currency_code" not in pricing_cols:
