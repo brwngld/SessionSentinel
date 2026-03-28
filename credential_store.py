@@ -235,28 +235,66 @@ def init_db():
             row["name"] if isinstance(row, dict) else row[1]
             for row in conn.execute("PRAGMA table_info(app_users)").fetchall()
         }
+        # Wrap each ALTER in try-except to handle columns that already exist
+        # Only catch duplicate column errors; re-raise all other errors
         if "role" not in existing_cols:
-            conn.execute("ALTER TABLE app_users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+            try:
+                conn.execute("ALTER TABLE app_users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+            except Exception as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
         if "is_active" not in existing_cols:
-            conn.execute("ALTER TABLE app_users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+            try:
+                conn.execute("ALTER TABLE app_users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+            except Exception as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
         if "must_change_password" not in existing_cols:
-            conn.execute("ALTER TABLE app_users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0")
+            try:
+                conn.execute("ALTER TABLE app_users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0")
+            except Exception as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
         if "password_changed_at" not in existing_cols:
-            conn.execute("ALTER TABLE app_users ADD COLUMN password_changed_at TEXT")
-            conn.execute(
-                "UPDATE app_users SET password_changed_at = ? WHERE password_changed_at IS NULL",
-                (datetime.now(timezone.utc).isoformat(),),
-            )
+            try:
+                conn.execute("ALTER TABLE app_users ADD COLUMN password_changed_at TEXT")
+                conn.execute(
+                    "UPDATE app_users SET password_changed_at = ? WHERE password_changed_at IS NULL",
+                    (datetime.now(timezone.utc).isoformat(),),
+                )
+            except Exception as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
         if "email" not in existing_cols:
-            conn.execute("ALTER TABLE app_users ADD COLUMN email TEXT")
+            try:
+                conn.execute("ALTER TABLE app_users ADD COLUMN email TEXT")
+            except Exception as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
         if "company_name" not in existing_cols:
-            conn.execute("ALTER TABLE app_users ADD COLUMN company_name TEXT")
+            try:
+                conn.execute("ALTER TABLE app_users ADD COLUMN company_name TEXT")
+            except Exception as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
         if "company_address" not in existing_cols:
-            conn.execute("ALTER TABLE app_users ADD COLUMN company_address TEXT")
+            try:
+                conn.execute("ALTER TABLE app_users ADD COLUMN company_address TEXT")
+            except Exception as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
         if "company_phone" not in existing_cols:
-            conn.execute("ALTER TABLE app_users ADD COLUMN company_phone TEXT")
+            try:
+                conn.execute("ALTER TABLE app_users ADD COLUMN company_phone TEXT")
+            except Exception as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
         if "company_logo_path" not in existing_cols:
-            conn.execute("ALTER TABLE app_users ADD COLUMN company_logo_path TEXT")
+            try:
+                conn.execute("ALTER TABLE app_users ADD COLUMN company_logo_path TEXT")
+            except Exception as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
 
         conn.execute(
             """
@@ -300,7 +338,11 @@ def init_db():
             for row in conn.execute("PRAGMA table_info(retrieval_runs)").fetchall()
         }
         if "payload_json" not in run_cols:
-            conn.execute("ALTER TABLE retrieval_runs ADD COLUMN payload_json TEXT")
+            try:
+                conn.execute("ALTER TABLE retrieval_runs ADD COLUMN payload_json TEXT")
+            except Exception as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS generated_files (
