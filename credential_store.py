@@ -21,6 +21,12 @@ except Exception:  # pragma: no cover - import depends on selected backend
     libsql = None
 
 DB_PATH = DATABASE_PATH if os.path.isabs(DATABASE_PATH) else os.path.join(os.path.dirname(__file__), DATABASE_PATH)
+
+# For Vercel/serverless: use /tmp if the default path is not writable
+# This is because Vercel's /var/task is read-only
+if not os.access(os.path.dirname(DB_PATH) or '.', os.W_OK):
+    DB_PATH = os.path.join('/tmp', 'app.db')
+
 DB_DIR = os.path.dirname(DB_PATH)
 if DB_DIR:
     os.makedirs(DB_DIR, exist_ok=True)
@@ -120,6 +126,7 @@ def _connect():
             raise RuntimeError("DB_BACKEND=turso requires TURSO_AUTH_TOKEN environment variable")
         
         try:
+            # Try to connect with sync enabled
             conn = libsql.connect(
                 DB_PATH,
                 sync_url=TURSO_DATABASE_URL,
@@ -130,8 +137,25 @@ def _connect():
             return conn
         except Exception as e:
             import logging
-            logging.error(f"Failed to connect to Turso: {e}")
-            raise
+            logging.warning(f"Failed to connect to Turso with sync: {e}")
+            
+            # If sync fails (e.g., on Vercel due to read-only fs), try remote-only
+            try:
+                logging.info("Attempting remote-only connection to Turso...")
+                conn = libsql.connect(
+                    ":memory:",  # Use in-memory database, no sync
+                    sync_url=TURSO_DATABASE_URL,
+                    auth_token=TURSO_AUTH_TOKEN
+                )
+                conn.row_factory = sqlite3.Row
+                return conn
+            except Exception as e2:
+                logging.error(f"Failed to connect to Turso (remote-only): {e2}")
+                # Last resort: use local SQLite only
+                logging.warning("Falling back to local SQLite only (no Turso sync)")
+                conn = sqlite3.connect(DB_PATH)
+                conn.row_factory = sqlite3.Row
+                return conn
     
     raise RuntimeError(f"Invalid DB_BACKEND: {DB_BACKEND}")
 
