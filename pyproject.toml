@@ -19,7 +19,7 @@ dependencies = [
 	"requests==2.32.5",
 	"cryptography==46.0.5",
 	"python-dotenv==1.2.2",
-	"libsql-client==0.3.1",
+	"libsql==0.1.5",
 ]
 
 [project.scripts]
