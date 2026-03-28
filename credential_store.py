@@ -62,140 +62,35 @@ _FERNET = _build_fernet()
 _db_initialized = False
 _db_init_lock = __import__('threading').Lock()
 
-# Connection pooling for serverless: reuse connection within the same invocation
-_db_pool = {}
-_db_pool_lock = __import__('threading').Lock()
-
-
-def _get_pool_key():
-    """Get a unique key for the current execution context (thread-based for Vercel)."""
-    import threading
-    return threading.current_thread().ident
-
-
-def _get_cached_connection():
-    """Get or create a cached database connection for this execution context."""
-    pool_key = _get_pool_key()
-    
-    with _db_pool_lock:
-        if pool_key not in _db_pool:
-            _db_pool[pool_key] = _connect_direct()
-        return _db_pool[pool_key]
-
-
-def _close_pooled_connection(pool_key=None):
-    """Close a pooled connection (called at end of request)."""
-    if pool_key is None:
-        pool_key = _get_pool_key()
-    
-    with _db_pool_lock:
-        if pool_key in _db_pool:
-            try:
-                _db_pool[pool_key].close()
-            except Exception:
-                pass
-            del _db_pool[pool_key]
-
-
-class _Row(dict):
-    """Dict-like row object that supports both dict and attribute access."""
-    def __getitem__(self, key):
-        if isinstance(key, int):
-            # Support positional access like tuple
-            return list(dict.values(self))[key]
-        return dict.__getitem__(self, key)
-    
-    def __getattr__(self, name):
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(f"'_Row' object has no attribute '{name}'")
-
-
-class _ResultCursor:
-    def __init__(self, result_set, column_names=None):
-        self._rows = []
-        self._column_names = column_names or []
-        self._index = 0
-        self.rowcount = int(getattr(result_set, "rows_affected", 0) or 0)
-        self.lastrowid = getattr(result_set, "last_insert_rowid", None)
-        
-        # Extract rows from result set (handles both libsql and sqlite3)
-        if hasattr(result_set, 'rows'):
-            # libsql result
-            self._rows = list(result_set.rows)
-        elif hasattr(result_set, 'fetchall'):
-            # sqlite3 cursor
-            self._rows = result_set.fetchall()
-        else:
-            # Try to iterate directly
-            try:
-                self._rows = list(result_set)
-            except TypeError:
-                self._rows = []
-        
-        # Convert tuples to dict-like rows if we have column names
-        if self._column_names and self._rows:
-            self._rows = [
-                _Row(dict(zip(self._column_names, row))) if isinstance(row, (tuple, list)) else row
-                for row in self._rows
-            ]
-
-    def fetchone(self):
-        if self._index >= len(self._rows):
-            return None
-        row = self._rows[self._index]
-        self._index += 1
-        return row
-
-    def fetchall(self):
-        if self._index >= len(self._rows):
-            return []
-        rows = self._rows[self._index :]
-        self._index = len(self._rows)
-        return rows
-
-
-class _EmptyResultSet:
-    rows = []
-    rows_affected = 0
-    last_insert_rowid = None
-
 
 class _LibsqlConnectionWrapper:
-    """Wrapper around libsql connection that provides sqlite3-like interface with dict rows."""
+    """Wrapper around libsql connection to support dict-like row access via row_factory simulation."""
     def __init__(self, conn):
         self._conn = conn
-        self._in_transaction = False
     
     def execute(self, sql, params=()):
-        """Execute query and return cursor with dict-like rows."""
+        """Execute and return cursor that wraps result in dict-like rows."""
         result = self._conn.execute(sql, params)
-        
-        # Extract column names from the result
-        column_names = []
-        if hasattr(result, 'columns') and result.columns:
-            column_names = result.columns
-        
-        return _ResultCursor(result, column_names)
+        # Wrap result to provide dict-like row access
+        return _LibsqlCursor(result)
     
     def executemany(self, sql, params_list):
-        """Execute multiple queries."""
+        """Execute multiple statements."""
         for params in params_list:
             self._conn.execute(sql, params)
     
     def commit(self):
-        """Commit transaction."""
+        """Commit changes."""
         if hasattr(self._conn, 'commit'):
             self._conn.commit()
     
     def rollback(self):
-        """Rollback transaction."""
+        """Rollback changes."""
         if hasattr(self._conn, 'rollback'):
             try:
                 self._conn.rollback()
             except Exception:
-                pass  # Some connections don't support rollback
+                pass
     
     def close(self):
         """Close connection."""
@@ -203,17 +98,35 @@ class _LibsqlConnectionWrapper:
             if hasattr(self._conn, 'close'):
                 self._conn.close()
         except Exception:
-            pass  # Ignore errors on close
-    
-    def __enter__(self):
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
+            pass
 
 
-def _connect_direct():
-    """Create a new database connection (always creates fresh, no pooling)."""
+class _LibsqlCursor:
+    """Cursor wrapper that provides dict-like access to libsql results."""
+    def __init__(self, result):
+        self._result = result
+        self.rowcount = int(getattr(result, "rows_affected", 0) or 0)
+        self.lastrowid = getattr(result, "last_insert_rowid", None)
+    
+    def fetchone(self):
+        """Fetch one row as dict or tuple."""
+        if hasattr(self._result, 'rows') and self._result.rows:
+            row = self._result.rows[0]
+            self._result.rows = self._result.rows[1:]
+            return row
+        return None
+    
+    def fetchall(self):
+        """Fetch all remaining rows."""
+        if hasattr(self._result, 'rows'):
+            rows = list(self._result.rows)
+            self._result.rows = []
+            return rows
+        return []
+
+
+def _connect():
+    """Create a new database connection."""
     if DB_BACKEND == "sqlite":
         # Use libsql if available (with sync), otherwise fall back to sqlite3
         if libsql is not None and TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
@@ -277,14 +190,6 @@ def _connect_direct():
     
     raise RuntimeError(f"Invalid DB_BACKEND: {DB_BACKEND}")
 
-
-def _connect():
-    """Get or create a pooled database connection for this execution context.
-    
-    For serverless environments (Vercel), this reuses connections within the same
-    invocation, reducing overhead from cold database connections.
-    """
-    return _get_cached_connection()
 
 
 def init_db():
