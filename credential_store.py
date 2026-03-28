@@ -16,9 +16,9 @@ from config import (
 )
 
 try:
-    from libsql_client import create_client_sync
+    import libsql
 except Exception:  # pragma: no cover - import depends on selected backend
-    create_client_sync = None
+    libsql = None
 
 DB_PATH = DATABASE_PATH if os.path.isabs(DATABASE_PATH) else os.path.join(os.path.dirname(__file__), DATABASE_PATH)
 DB_DIR = os.path.dirname(DB_PATH)
@@ -85,101 +85,55 @@ class _EmptyResultSet:
     last_insert_rowid = None
 
 
-class _LibsqlConnection:
-    def __init__(self, db_url, auth_token):
-        self._db_url = db_url
-        self._auth_token = auth_token
-        self._client = None
-        self._transaction = None
-        self.row_factory = None
-    
-    def _ensure_connected(self):
-        """Lazily connect on first use"""
-        if self._client is None:
-            self._client = create_client_sync(url=self._db_url, auth_token=self._auth_token)
-            self._transaction = self._client.transaction()
-
-    def _normalize_params(self, params):
-        if params is None:
-            return []
-        if isinstance(params, tuple):
-            return list(params)
-        return params
-
-    def execute(self, sql, params=()):
-        self._ensure_connected()
-        result = self._transaction.execute(sql, self._normalize_params(params))
-        return _ResultCursor(result)
-
-    def executemany(self, sql, seq_of_params):
-        self._ensure_connected()
-        last_cursor = _ResultCursor(_EmptyResultSet())
-        for params in seq_of_params:
-            last_cursor = self.execute(sql, params)
-        return last_cursor
-
-    def commit(self):
-        if self._client is None:
-            return
-        if self._transaction is None:
-            return
-        self._transaction.commit()
-        self._transaction.close()
-        self._transaction = self._client.transaction()
-
-    def rollback(self):
-        if self._client is None:
-            return
-        if self._transaction is None:
-            return
-        try:
-            self._transaction.rollback()
-        except Exception:
-            pass
-        try:
-            self._transaction.close()
-        except Exception:
-            pass
-        try:
-            self._transaction = self._client.transaction()
-        except Exception:
-            self._transaction = None
-
-    def close(self):
-        if self._transaction is not None:
-            try:
-                if not self._transaction.closed:
-                    self._transaction.rollback()
-            except Exception:
-                pass
-            try:
-                self._transaction.close()
-            except Exception:
-                pass
-            self._transaction = None
-        if self._client is not None:
-            try:
-                self._client.close()
-            except Exception:
-                pass
-            self._client = None
-
-
 def _connect():
     if DB_BACKEND == "sqlite":
+        # Use libsql if available (with sync), otherwise fall back to sqlite3
+        if libsql is not None and TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
+            try:
+                # Use libsql with local SQLite synced to Turso
+                conn = libsql.connect(
+                    DB_PATH,
+                    sync_url=TURSO_DATABASE_URL,
+                    auth_token=TURSO_AUTH_TOKEN,
+                    sync_interval=60  # Sync every 60 seconds
+                )
+                conn.row_factory = sqlite3.Row
+                return conn
+            except Exception as e:
+                import logging
+                logging.warning(f"Failed to connect to Turso, falling back to local SQLite: {e}")
+                # Fall through to regular sqlite3 connection
+        
+        # Regular SQLite connection
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         return conn
 
-    if create_client_sync is None:
-        raise RuntimeError("DB_BACKEND=turso requires the 'libsql-client' package to be installed.")
-
-    try:
-        return _LibsqlConnection(TURSO_DATABASE_URL, TURSO_AUTH_TOKEN)
-    except Exception as e:
-        import logging
-        logging.error(f"Failed to create Turso connection: {e}")
-        raise
+    if DB_BACKEND == "turso":
+        if libsql is None:
+            raise RuntimeError("DB_BACKEND=turso requires the 'libsql' package. Install with: pip install libsql")
+        
+        if not TURSO_DATABASE_URL:
+            raise RuntimeError("DB_BACKEND=turso requires TURSO_DATABASE_URL environment variable")
+        
+        if not TURSO_AUTH_TOKEN:
+            raise RuntimeError("DB_BACKEND=turso requires TURSO_AUTH_TOKEN environment variable")
+        
+        try:
+            conn = libsql.connect(
+                DB_PATH,
+                sync_url=TURSO_DATABASE_URL,
+                auth_token=TURSO_AUTH_TOKEN,
+                sync_interval=60
+            )
+            conn.row_factory = sqlite3.Row
+            return conn
+        except Exception as e:
+            import logging
+            logging.error(f"Failed to connect to Turso: {e}")
+            raise
+    
+    raise RuntimeError(f"Invalid DB_BACKEND: {DB_BACKEND}")
 
 
 def init_db():
