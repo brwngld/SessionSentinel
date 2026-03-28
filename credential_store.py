@@ -105,24 +105,34 @@ class _LibsqlCursor:
     """Cursor wrapper that provides dict-like access to libsql results."""
     def __init__(self, result):
         self._result = result
+        self._rows = []
+        self._index = 0
         self.rowcount = int(getattr(result, "rows_affected", 0) or 0)
         self.lastrowid = getattr(result, "last_insert_rowid", None)
+        
+        # Cache all rows upfront - handle both libsql tuples and columns
+        if hasattr(result, 'rows') and hasattr(result, 'columns'):
+            # libsql: rows are tuples, columns are list of names
+            for row_tuple in result.rows:
+                row_dict = {col: val for col, val in zip(result.columns, row_tuple)}
+                self._rows.append(row_dict)
+        elif hasattr(result, 'rows'):
+            # libsql without columns - just return tuples
+            self._rows = list(result.rows)
     
     def fetchone(self):
-        """Fetch one row as dict or tuple."""
-        if hasattr(self._result, 'rows') and self._result.rows:
-            row = self._result.rows[0]
-            self._result.rows = self._result.rows[1:]
-            return row
-        return None
+        """Fetch one row."""
+        if self._index >= len(self._rows):
+            return None
+        row = self._rows[self._index]
+        self._index += 1
+        return row
     
     def fetchall(self):
         """Fetch all remaining rows."""
-        if hasattr(self._result, 'rows'):
-            rows = list(self._result.rows)
-            self._result.rows = []
-            return rows
-        return []
+        rows = self._rows[self._index:]
+        self._index = len(self._rows)
+        return rows
 
 
 def _connect():
