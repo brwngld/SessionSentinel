@@ -43,6 +43,7 @@ from config import (
 )
 from credential_store import (
     CredentialDecryptionError,
+    _close_pooled_connection,
     clear_failed_login,
     delete_app_user,
     get_account_alias_rules_for_user,
@@ -111,6 +112,12 @@ app.config["SESSION_COOKIE_SECURE"] = SESSION_COOKIE_SECURE
 app.config["REMEMBER_COOKIE_HTTPONLY"] = True
 app.config["REMEMBER_COOKIE_DURATION"] = timedelta(days=REMEMBER_ME_DAYS)
 app.permanent_session_lifetime = timedelta(minutes=SESSION_TIMEOUT_MINUTES)
+
+
+@app.teardown_appcontext
+def _cleanup_db_pool(exception=None):
+    """Close pooled database connection at end of request to free resources."""
+    _close_pooled_connection()
 
 
 def _startup_db_message():

@@ -62,6 +62,40 @@ _FERNET = _build_fernet()
 _db_initialized = False
 _db_init_lock = __import__('threading').Lock()
 
+# Connection pooling for serverless: reuse connection within the same invocation
+_db_pool = {}
+_db_pool_lock = __import__('threading').Lock()
+
+
+def _get_pool_key():
+    """Get a unique key for the current execution context (thread-based for Vercel)."""
+    import threading
+    return threading.current_thread().ident
+
+
+def _get_cached_connection():
+    """Get or create a cached database connection for this execution context."""
+    pool_key = _get_pool_key()
+    
+    with _db_pool_lock:
+        if pool_key not in _db_pool:
+            _db_pool[pool_key] = _connect()
+        return _db_pool[pool_key]
+
+
+def _close_pooled_connection(pool_key=None):
+    """Close a pooled connection (called at end of request)."""
+    if pool_key is None:
+        pool_key = _get_pool_key()
+    
+    with _db_pool_lock:
+        if pool_key in _db_pool:
+            try:
+                _db_pool[pool_key].close()
+            except Exception:
+                pass
+            del _db_pool[pool_key]
+
 
 class _Row(dict):
     """Dict-like row object that supports both dict and attribute access."""
@@ -164,7 +198,8 @@ class _LibsqlConnectionWrapper:
         self.close()
 
 
-def _connect():
+def _connect_direct():
+    """Create a new database connection (always creates fresh, no pooling)."""
     if DB_BACKEND == "sqlite":
         # Use libsql if available (with sync), otherwise fall back to sqlite3
         if libsql is not None and TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
@@ -227,6 +262,15 @@ def _connect():
                 return conn
     
     raise RuntimeError(f"Invalid DB_BACKEND: {DB_BACKEND}")
+
+
+def _connect():
+    """Get or create a pooled database connection for this execution context.
+    
+    For serverless environments (Vercel), this reuses connections within the same
+    invocation, reducing overhead from cold database connections.
+    """
+    return _get_cached_connection()
 
 
 def init_db():
