@@ -113,9 +113,14 @@ class _LibsqlCursor:
         # Cache all rows upfront - handle both libsql tuples and columns
         if hasattr(result, 'rows') and hasattr(result, 'columns'):
             # libsql: rows are tuples, columns are list of names
+            cols = result.columns if result.columns else []
             for row_tuple in result.rows:
-                row_dict = {col: val for col, val in zip(result.columns, row_tuple)}
-                self._rows.append(row_dict)
+                if cols:
+                    row_dict = {col: val for col, val in zip(cols, row_tuple)}
+                    self._rows.append(row_dict)
+                else:
+                    # No column names, return tuple as-is
+                    self._rows.append(row_tuple)
         elif hasattr(result, 'rows'):
             # libsql without columns - just return tuples
             self._rows = list(result.rows)
@@ -1223,7 +1228,11 @@ def get_app_user(user_id):
     if not row:
         return None
 
-    return dict(row)
+    # If row is already a dict (from _LibsqlCursor), return it
+    # If it's a tuple (from sqlite3), convert it to dict
+    if isinstance(row, dict):
+        return row
+    return row
 
 
 def register_failed_login(user_id, max_attempts, lock_minutes):
