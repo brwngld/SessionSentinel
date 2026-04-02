@@ -5,35 +5,75 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SessionSentinel Web</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz@24" />
   <link rel="stylesheet" href="{{ url_for('static', filename='css/shared.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/index.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
 </head>
-<body>
-  <div class="wrap">
-    {% include "_nav.html" %}
+<body data-page="dashboard">
+  {% include "_nav.html" %}
 
-    <section class="hero">
-      <div class="hero-pill">official • secure • fast</div>
-      <h1>Retrieve <span class="accent">Customs Data</span><br>and Track Runs in Seconds.</h1>
-      <p>Automate data retrieval from your customs account by date range and review generated files per run.</p>
-      <div class="hero-search">
-        <input id="job-search" type="text" placeholder="Search by run id, label, status, or output path">
-        <button type="button" id="focus-jobs">Search</button>
+  <div class="dashboard-container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <section class="dashboard-summary card animated-card">
+          {% for category, message in messages %}
+            <div class="flash {{ category }}">{{ message }}</div>
+          {% endfor %}
+        </section>
+      {% endif %}
+    {% endwith %}
+
+    <section class="dashboard-hero card animated-card delay-1">
+      <div class="dashboard-hero__top">
+        <div>
+          <div class="dashboard-kicker">Control Room</div>
+          <h1>Welcome, {{ current_user.id }}</h1>
+          <p>Search recent runs, launch retrieval jobs, and review your notifications from a single dashboard.</p>
+        </div>
+        <div class="hero-search">
+          <input id="job-search" type="text" placeholder="Search by run id, label, status, or file path">
+          <button type="button" id="focus-jobs">Search</button>
+        </div>
       </div>
+
       <div class="chip-row">
         <button type="button" class="chip active" data-job-filter="all">All Runs</button>
         <button type="button" class="chip" data-job-filter="queued">Queued</button>
         <button type="button" class="chip" data-job-filter="running">Running</button>
-        <button type="button" class="chip" data-job-filter="stopped">Stopped</button>
+        <button type="button" class="chip" data-job-filter="completed">Completed</button>
         <button type="button" class="chip" data-job-filter="failed">Failed</button>
       </div>
     </section>
 
-    <section class="card section-anchor animated-card delay-1" id="saved-searches">
-      <div class="topbar">
-        <h2>Saved Searches</h2>
-      </div>
-      <div class="card-note">Quick rerun ideas from your latest jobs</div>
+    <section class="dashboard-grid dashboard-grid--metrics">
+      <article class="metric-card animated-card delay-1">
+        <div class="metric-card__icon material-symbols-outlined">vpn_key</div>
+        <div class="metric-card__value">{{ dashboard_metrics.credentials }}</div>
+        <div class="metric-card__label">Credentials Saved</div>
+      </article>
+      <article class="metric-card animated-card delay-1">
+        <div class="metric-card__icon material-symbols-outlined">task_alt</div>
+        <div class="metric-card__value">{{ dashboard_metrics.active_jobs }}</div>
+        <div class="metric-card__label">Active Jobs</div>
+      </article>
+      <article class="metric-card animated-card delay-1">
+        <div class="metric-card__icon material-symbols-outlined">folder_open</div>
+        <div class="metric-card__value">{{ dashboard_metrics.files }}</div>
+        <div class="metric-card__label">Generated Files</div>
+      </article>
+      <article class="metric-card animated-card delay-1">
+        <div class="metric-card__icon material-symbols-outlined">assessment</div>
+        <div class="metric-card__value">{{ dashboard_metrics.reports }}</div>
+        <div class="metric-card__label">Total Runs</div>
+      </article>
+    </section>
+
+    <section class="dashboard-panel animated-card delay-1" id="saved-searches">
+      <h2 class="section-title">
+        <span class="material-symbols-outlined">view_carousel</span>
+        Saved Searches
+      </h2>
       <div class="saved-carousel" id="saved-carousel">
         {% if jobs %}
           <div class="saved-track-viewport">
@@ -49,7 +89,7 @@
                   <div class="saved-meta">Page size: {{ job.payload.page_size or '-' }}</div>
                   <div class="saved-meta">Output: {{ job.payload.output_dir or '-' }}</div>
                 </div>
-                <div class="saved-action">Use these values in “Run Data Retrieval” below</div>
+                <div class="saved-action">Use these values in the Run Job panel below</div>
               </article>
               {% endfor %}
             </div>
@@ -66,17 +106,42 @@
       </div>
     </section>
 
-    <section class="card animated-card delay-1">
-      <div class="cta-center">
-        <h2>Need another customs retrieval run?</h2>
-        <p>Use your saved portal credentials, choose a date range, and generate downloadable files in one run.</p>
-        <a href="#run-export"><button type="button">Start New Retrieval</button></a>
-      </div>
+    <section class="dashboard-grid dashboard-grid--actions">
+      <a href="#run-job" class="action-card animated-card delay-2">
+        <span class="action-card__icon material-symbols-outlined">play_arrow</span>
+        <h3 class="action-card__title">Run Job</h3>
+        <p class="action-card__description">Start a retrieval using your saved portal credentials and date range controls.</p>
+      </a>
+      <a href="{{ url_for('reports_dashboard') }}" class="action-card animated-card delay-2">
+        <span class="action-card__icon material-symbols-outlined">assessment</span>
+        <h3 class="action-card__title">Reports</h3>
+        <p class="action-card__description">Open the financial and BOE dashboards for your imported files.</p>
+      </a>
+      <a href="{{ url_for('index') }}#notifications" class="action-card animated-card delay-2">
+        <span class="action-card__icon material-symbols-outlined">notifications</span>
+        <h3 class="action-card__title">Notifications</h3>
+        <p class="action-card__description">Review recent run alerts, status messages, and operator notices.</p>
+      </a>
+      <a href="{{ url_for('profile') }}" class="action-card animated-card delay-2">
+        <span class="action-card__icon material-symbols-outlined">person</span>
+        <h3 class="action-card__title">Profile</h3>
+        <p class="action-card__description">Manage your company profile, password, and account settings.</p>
+      </a>
+      {% if is_admin %}
+      <a href="{{ url_for('admin_users') }}" class="action-card animated-card delay-2">
+        <span class="action-card__icon material-symbols-outlined">admin_panel_settings</span>
+        <h3 class="action-card__title">Admin Panel</h3>
+        <p class="action-card__description">Manage users and review system activity.</p>
+      </a>
+      {% endif %}
     </section>
 
-    <section class="card section-anchor animated-card delay-2" id="account">
-      <h2>Portal Credentials</h2>
-      <p>
+    <section class="dashboard-panel animated-card delay-2">
+      <h2 class="section-title">
+        <span class="material-symbols-outlined">vpn_key</span>
+        Portal Credentials
+      </h2>
+      <p class="card-note">
         {% if has_portal_credentials %}
           Saved for username <strong>{{ portal_username }}</strong>.
         {% else %}
@@ -110,8 +175,11 @@
       {% endif %}
     </section>
 
-    <section class="card section-anchor animated-card delay-2" id="run-export">
-      <h2>Run Data Retrieval</h2>
+    <section class="dashboard-panel animated-card delay-2" id="run-job">
+      <h2 class="section-title">
+        <span class="material-symbols-outlined">play_arrow</span>
+        Run Job
+      </h2>
       <div class="retrieval-tabs" id="retrieval-tabs">
         <button type="button" class="retrieval-tab-btn active" id="retrieval-tab-financial" data-target="retrieval-panel-financial">Financial Retrieval</button>
         <button type="button" class="retrieval-tab-btn" id="retrieval-tab-boe-blocking" data-target="retrieval-panel-boe-blocking">BOE Blocking</button>
@@ -170,7 +238,7 @@
         <form id="boe-blocking-retrieval-form" class="boe-status-form" action="/run/boe-blocking" method="post">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="created_by" value="M">
-          <div class="grid boe-status-grid">
+          <div class="grid">
             <div class="field boe-blocking-field">
               <label class="checkbox-label" for="boe-blocking-checkbox">
                 <input id="boe-blocking-checkbox" name="elapsed_60_days" type="checkbox" checked>
@@ -206,7 +274,7 @@
         <form id="boe-status-retrieval-form" class="boe-status-form" action="/run/boe-status" method="post">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="created_by" value="M">
-          <div class="grid boe-status-grid">
+          <div class="grid">
             <div class="field">
               <label for="boe-status-start-date">Start Date</label>
               <input id="boe-status-start-date" class="js-date-input" name="boe_status_start_date" type="text" value="{{ defaults.start_date }}" placeholder="dd/mm/yyyy" required>
@@ -215,7 +283,7 @@
               <label for="boe-status-end-date">End Date</label>
               <input id="boe-status-end-date" class="js-date-input" name="boe_status_end_date" type="text" value="{{ defaults.end_date }}" placeholder="dd/mm/yyyy" required>
             </div>
-            <div class="field boe-range-field">
+            <div class="field">
               <label>Quick Range</label>
               <div class="boe-range-actions">
                 <button type="button" class="boe-range-btn" data-boe-month-range="6">-6M</button>
@@ -247,79 +315,126 @@
       </div>
     </section>
 
-    <section class="card section-anchor animated-card delay-3" id="activity">
-      <h2>Recent Retrieval Runs</h2>
+    <section class="dashboard-table card animated-card delay-3" id="activity">
+      <h2 class="section-title">
+        <span class="material-symbols-outlined">table_view</span>
+        Recent Retrieval Runs
+      </h2>
       <div class="card-note">Generated files are available for up to 24 hours and then removed automatically.</div>
-      <div class="card-note">Storage: Database-backed files (Open or Download directly from this dashboard).</div>
-      
-      <!-- Results tabs for different retrieval types -->
+      <div class="card-note">Storage: Database-backed files. Open or download directly from this dashboard.</div>
+
       <div class="results-tabs" id="results-tabs">
         <button type="button" class="results-tab-btn active" data-filter="all">All Runs</button>
         <button type="button" class="results-tab-btn" data-filter="financial">Financial</button>
         <button type="button" class="results-tab-btn" data-filter="boe_blocking_current">BOE Blocking</button>
         <button type="button" class="results-tab-btn" data-filter="boe_status_dates">BOE Status</button>
       </div>
-      
+
       <div class="refresh-note" id="jobs-last-updated">Last updated: --</div>
-      <div class="jobs" id="jobs" data-retention-hours="{{ file_retention_hours }}">
+      <div class="jobs-table-wrap" id="jobs" data-retention-hours="{{ file_retention_hours }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         {% if jobs %}
-          {% for job in jobs %}
-            <article class="job" data-job-id="{{ job.id }}" data-job-status="{{ job.status }}" data-retrieval-type="{{ job.payload.retrieval_type if job.payload else 'financial' }}">
-              <div><strong>ID:</strong> {{ job.id }}</div>
-              <div class="status {{ job.status }}">{{ job.status }}</div>
-              <div class="job-stop-control">
-                {% if job.status in ['queued', 'running'] %}
-                <form class="inline-form stop-run-form" method="post" action="/run/{{ job.id }}/stop">
-                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                  <button class="stop-run-btn" type="submit">Stop Run</button>
-                </form>
-                {% elif job.status == 'stopping' %}
-                <span class="stop-run-pending">Stopping...</span>
-                {% elif job.status in ['failed', 'stopped'] %}
-                <form class="inline-form retry-run-form" method="post" action="/run/{{ job.id }}/retry">
-                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                  <button class="retry-run-btn" type="submit">Retry Run</button>
-                </form>
-                {% endif %}
-              </div>
-              <div><strong>Run mode:</strong> <span class="run-mode {% if job.payload and job.payload.headless %}run-mode-headless{% else %}run-mode-visible{% endif %}">{% if job.payload and job.payload.headless %}Headless{% else %}Visible{% endif %}</span></div>
-              <div><strong>Last update:</strong> <span class="message">{{ job.last_message or 'No status message available yet' }}</span></div>
-              <div class="job-result">
-                <div class="delete-files-control" data-job-id="{{ job.id }}" data-csrf="{{ csrf_token }}"></div>
-              </div>
-            </article>
-          {% endfor %}
+        <table class="jobs-table">
+          <thead>
+            <tr>
+              <th>Run</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th>Mode</th>
+              <th>Last Update</th>
+              <th>Controls</th>
+              <th>Files</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for job in jobs %}
+            <tr class="job-row" data-job-id="{{ job.id }}" data-job-status="{{ job.status }}" data-retrieval-type="{{ job.payload.retrieval_type if job.payload else 'financial' }}">
+              <td>
+                <strong>{{ job.id }}</strong>
+              </td>
+              <td>
+                {{ (job.payload.retrieval_type if job.payload else 'financial') | replace('_', ' ') | title }}
+              </td>
+              <td>
+                <div class="status {{ job.status }}">{{ job.status }}</div>
+                <div class="job-stop-control">
+                  {% if job.status in ['queued', 'running'] %}
+                  <form class="inline-form stop-run-form" method="post" action="/run/{{ job.id }}/stop">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button class="stop-run-btn" type="submit">Stop Run</button>
+                  </form>
+                  {% elif job.status == 'stopping' %}
+                  <span class="stop-run-pending">Stopping...</span>
+                  {% elif job.status in ['failed', 'stopped'] %}
+                  <form class="inline-form retry-run-form" method="post" action="/run/{{ job.id }}/retry">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button class="retry-run-btn" type="submit">Retry Run</button>
+                  </form>
+                  {% endif %}
+                </div>
+              </td>
+              <td>
+                <span class="run-mode {% if job.payload and job.payload.headless %}run-mode-headless{% else %}run-mode-visible{% endif %}">
+                  {% if job.payload and job.payload.headless %}Headless{% else %}Visible{% endif %}
+                </span>
+              </td>
+              <td>
+                <span class="message">{{ job.last_message or 'No status message available yet' }}</span>
+              </td>
+              <td class="job-result"></td>
+              <td></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
         {% else %}
-          <div class="empty-state">No jobs yet. Start a run and your jobs will appear here.</div>
+        <div class="empty-state">No jobs yet. Start a run and your jobs will appear here.</div>
         {% endif %}
       </div>
     </section>
 
-    <section class="card animated-card delay-3">
-      <h2>Recent Logs (Your Account)</h2>
-      <div class="refresh-note" id="logs-last-updated">Last updated: --</div>
-      <div class="log-controls">
-        <label>
-          Outcome
-          <select id="log-outcome">
-            <option value="all">All</option>
-            <option value="success">Success</option>
-            <option value="failed">Failed</option>
-            <option value="blocked">Blocked</option>
-          </select>
-        </label>
-        <label>
-          Event
-          <select id="log-event-type">
-            <option value="all">All</option>
-          </select>
-        </label>
-      </div>
-      <div class="log-list" id="log-list">
-        <div class="skeleton-item"><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
-        <div class="skeleton-item"><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
-        <div class="skeleton-item"><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+    <section class="dashboard-feed card animated-card delay-3" id="notifications">
+      <div class="activity-feed">
+        <div class="activity-feed__header">
+          <h3 class="activity-feed__title">Notifications</h3>
+          <a href="#activity" class="activity-feed__view-all">View runs</a>
+        </div>
+        <div class="refresh-note" id="logs-last-updated">Last updated: --</div>
+        <div class="log-controls">
+          <label>
+            Outcome
+            <select id="log-outcome">
+              <option value="all">All</option>
+              <option value="success">Success</option>
+              <option value="failed">Failed</option>
+              <option value="blocked">Blocked</option>
+            </select>
+          </label>
+          <label>
+            Event
+            <select id="log-event-type">
+              <option value="all">All</option>
+            </select>
+          </label>
+        </div>
+        <div class="activity-feed__body" id="log-list">
+          {% if dashboard_notifications %}
+            {% for note in dashboard_notifications %}
+            <div class="activity-item">
+              <div class="activity-item__icon {% if note.kind == 'danger' %}danger{% elif note.kind == 'success' %}success{% endif %} material-symbols-outlined">
+                {% if note.kind == 'danger' %}error{% elif note.kind == 'success' %}check_circle{% else %}notifications{% endif %}
+              </div>
+              <div class="activity-item__content">
+                <div class="activity-item__action">{{ note.action }}</div>
+                <div class="activity-item__details">{{ note.details }}</div>
+                <div class="activity-item__timestamp">{{ note.timestamp }}</div>
+              </div>
+            </div>
+            {% endfor %}
+          {% else %}
+            <div class="empty-state">No notifications yet.</div>
+          {% endif %}
+        </div>
       </div>
     </section>
 

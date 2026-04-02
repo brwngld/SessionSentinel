@@ -1,27 +1,46 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
 :root {
-  --bg: #f4f6f8;
+  --bg: #fbfffe;
   --card: #ffffff;
-  --text: #1c2a39;
-  --muted: #607080;
-  --accent: #042a57;
-  --accent-2: #c89a52;
-  --surface-dark: #02224a;
-  --danger: #b00020;
+  --surface-alt: #f4f6f8;
+  --text: #1a1a1a;
+  --muted: #666666;
+  --accent: #007cbe;
+  --accent-hover: #005f91;
+  --accent-soft: #e6f2f8;
+  --accent-strong: #003f60;
+  --accent-muted: #66a9d4;
+  --danger: #96031a;
+  --danger-hover: #6d0212;
+  --danger-soft: #f8d7da;
   --success: #2a9d8f;
-  --border: #d9e1e6;
+  --border: #e0e0e0;
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 8px 24px rgba(15, 23, 42, 0.1);
+  --shadow-lg: 0 16px 40px rgba(15, 23, 42, 0.12);
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
 
 body {
   margin: 0;
-  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  font-family: Inter, "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
   color: var(--text);
   background:
-    radial-gradient(circle at 10% 10%, #ffffff 0%, transparent 35%),
-    radial-gradient(circle at 90% 0%, #edf2f9 0%, transparent 30%),
-    var(--bg);
-  min-height: 100vh;
+    radial-gradient(circle at 15% 10%, #ffffff 0, transparent 30%),
+    radial-gradient(circle at 90% 0%, #edf5fb 0, transparent 28%),
+    linear-gradient(180deg, var(--surface-alt) 0%, var(--bg) 55%);
 }
 
 .wrap {
@@ -34,14 +53,16 @@ body {
 .card {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 14px;
-  box-shadow: 0 10px 30px rgba(7, 38, 61, 0.06);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
   padding: 18px;
 }
 
-h1, h2 {
+h1,
+h2,
+h3 {
   margin-top: 0;
-  color: var(--accent);
+  color: var(--accent-strong);
 }
 
 .nav-shell {
@@ -49,9 +70,7 @@ h1, h2 {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  overflow-y: hidden;
+  flex-wrap: wrap;
   white-space: nowrap;
   padding: 10px 14px;
 }
@@ -60,34 +79,37 @@ h1, h2 {
   display: inline-grid;
   font-size: 1.35rem;
   font-weight: 800;
-  color: var(--accent);
+  color: var(--accent-strong);
   line-height: 1;
   text-decoration: none;
+  letter-spacing: -0.02em;
 }
 
 .brand span {
   display: block;
-  color: var(--accent-2);
+  color: var(--accent);
 }
 
 .nav-links {
   display: flex;
   gap: 8px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   min-width: 0;
 }
 
 .nav-links a {
   text-decoration: none;
-  color: var(--accent);
+  color: var(--accent-strong);
   font-weight: 600;
-  padding: 5px 7px;
-  border-radius: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
   font-size: 0.92rem;
+  border: 1px solid transparent;
 }
 
 .nav-links a:hover {
-  background: #eef3fb;
+  background: var(--accent-soft);
+  border-color: #cde4ef;
 }
 
 .actions {
@@ -95,7 +117,7 @@ h1, h2 {
   display: flex;
   gap: 8px;
   align-items: center;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
 }
 
 .inline-form {
@@ -116,7 +138,7 @@ h1, h2 {
 
 .profile-link:hover {
   border-color: var(--border);
-  background: #f4f8fe;
+  background: var(--surface-alt);
 }
 
 .role-badge {
@@ -132,16 +154,18 @@ h1, h2 {
   text-transform: uppercase;
 }
 
-.role-badge-role {
-  background: #edf7f8;
-  border-color: #cbe6e3;
-  color: #0e4b43;
+.role-badge-role,
+.role-badge-admin {
+  background: var(--accent-soft);
+  border-color: #cde4ef;
+  color: var(--accent-strong);
 }
 
-.role-badge-user {
-  background: #eef3fb;
+.role-badge-user,
+.role-badge-member {
+  background: var(--surface-alt);
   border-color: #d4deef;
-  color: #14365f;
+  color: var(--accent-strong);
   text-transform: none;
 }
 
@@ -150,18 +174,6 @@ h1, h2 {
   width: 28px;
   height: 28px;
   justify-content: center;
-}
-
-.role-badge-admin {
-  background: #edf7f8;
-  border-color: #cbe6e3;
-  color: #0e4b43;
-}
-
-.role-badge-member {
-  background: #eef3fb;
-  border-color: #d4deef;
-  color: #14365f;
 }
 
 .role-badge-icon {
@@ -175,13 +187,24 @@ h1, h2 {
 }
 
 button {
-  border: 0;
+  border: 1px solid var(--accent);
   border-radius: 10px;
   padding: 10px 16px;
   color: #fff;
-  background: linear-gradient(120deg, var(--accent), #17467d);
-  font-weight: 600;
+  background: linear-gradient(120deg, var(--accent), var(--accent-hover));
+  font: inherit;
+  font-weight: 700;
   cursor: pointer;
+  box-shadow: var(--shadow-sm);
+}
+
+button:hover {
+  background: linear-gradient(120deg, var(--accent-hover), var(--accent-strong));
+}
+
+button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
 }
 
 .flash {
@@ -207,15 +230,37 @@ button {
   animation: rise-in 360ms ease-out both;
 }
 
-.delay-1 { animation-delay: 50ms; }
-.delay-2 { animation-delay: 110ms; }
-.delay-3 { animation-delay: 170ms; }
+.delay-1 {
+  animation-delay: 50ms;
+}
+
+.delay-2 {
+  animation-delay: 110ms;
+}
+
+.delay-3 {
+  animation-delay: 170ms;
+}
 
 .app-footer {
   text-align: center;
   color: var(--muted);
   font-size: 0.88rem;
   padding: 4px 8px;
+}
+
+.empty-state {
+  border: 1px dashed #d7e2ea;
+  border-radius: 12px;
+  padding: 16px;
+  color: var(--muted);
+  background: #f8fbfd;
+  text-align: center;
+  font-size: 0.92rem;
+}
+
+.section-anchor {
+  scroll-margin-top: 80px;
 }
 
 @keyframes rise-in {
@@ -230,15 +275,13 @@ button {
 }
 
 @media (max-width: 800px) {
-  .nav-shell {
-    align-items: flex-start;
-    flex-wrap: wrap;
-    white-space: normal;
-    overflow-x: visible;
-  }
-
   .nav-links,
   .actions {
-    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .nav-links a {
+    width: calc(50% - 4px);
+    text-align: center;
   }
 }

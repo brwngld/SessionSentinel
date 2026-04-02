@@ -1,34 +1,145 @@
-<section class="card animated-card">
-  <div class="nav-shell">
-    <a class="brand" href="{{ url_for('index') }}">Session<span>Sentinel</span></a>
-    <div class="nav-links">
-      <a href="{{ url_for('index') }}#run-export">Run Retrieval</a>
-      <a href="{{ url_for('index') }}#saved-searches">Saved</a>
-      <a href="{{ url_for('reports_dashboard') }}">Reports</a>
-      <a href="{{ url_for('index') }}#account">Account</a>
-      <a href="{{ url_for('index') }}#activity">Activity</a>
-      {% if is_admin %}
-      <a href="{{ url_for('admin_users') }}">Users</a>
-      <a href="{{ url_for('admin_audit') }}">Audit</a>
-      <a href="{{ url_for('admin_session_log') }}">Log</a>
+<style>
+  .ss-nav {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    backdrop-filter: blur(18px);
+    background: rgba(255, 255, 255, 0.95);
+    border-bottom: 1px solid rgba(0, 124, 190, 0.12);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+    margin-bottom: 18px;
+  }
+
+  .ss-nav__inner {
+    max-width: 1480px;
+    margin: 0 auto;
+    padding: 12px 24px;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .ss-nav__brand {
+    color: #007cbe;
+    font-weight: 800;
+    text-decoration: none;
+    letter-spacing: -0.02em;
+    font-size: 1.2rem;
+    transition: color 0.2s ease;
+  }
+
+  .ss-nav__brand:hover {
+    color: #005f91;
+  }
+
+  .ss-nav__session {
+    margin-left: auto;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    color: #666666;
+    font-size: 0.9rem;
+  }
+
+  .ss-nav__chip {
+    padding: 6px 12px;
+    border-radius: 6px;
+    background: #e6f2f8;
+    color: #003f60;
+    font-weight: 700;
+    border: 1px solid rgba(0, 124, 190, 0.16);
+    font-size: 0.85rem;
+  }
+
+  .ss-nav__links {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .ss-nav__links a,
+  .ss-nav__links button {
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    background: #fbfffe;
+    color: #007cbe;
+    text-decoration: none;
+    padding: 8px 14px;
+    font: inherit;
+    font-size: 0.92rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.18s ease;
+  }
+
+  .ss-nav__links a:hover,
+  .ss-nav__links button:not(button[type="submit"]):hover {
+    transform: translateY(-1px);
+    border-color: #007cbe;
+    box-shadow: 0 4px 12px rgba(0, 124, 190, 0.12);
+  }
+
+  .ss-nav__links button[type="submit"] {
+    background: linear-gradient(180deg, #007cbe 0%, #005f91 100%);
+    color: #fbfffe;
+    border-color: #007cbe;
+  }
+
+  .ss-nav__links button[type="submit"]:hover {
+    box-shadow: 0 4px 12px rgba(0, 124, 190, 0.25);
+  }
+
+  @media (max-width: 720px) {
+    .ss-nav__inner {
+      padding: 12px 16px;
+      gap: 12px;
+    }
+
+    .ss-nav__session {
+      margin-left: 0;
+      width: 100%;
+    }
+
+    .ss-nav__links {
+      width: 100%;
+      justify-content: flex-end;
+    }
+  }
+</style>
+
+<nav class="ss-nav">
+  <div class="ss-nav__inner">
+    <a class="ss-nav__brand" href="{{ url_for('index') }}">SessionSentinel</a>
+    <div class="ss-nav__session">
+      {% if current_user.is_authenticated %}
+        <span class="ss-nav__chip">{{ current_user.id }}</span>
+        <span class="ss-nav__chip">{{ current_role|default(current_user.role|default('user'))|title }}</span>
+      {% else %}
+        <span class="ss-nav__chip">Guest access</span>
       {% endif %}
     </div>
-    <div class="actions">
-      <a class="profile-link" href="{{ url_for('profile') }}">
-        <span class="role-badge role-badge-icon-only {% if is_admin %}role-badge-admin{% else %}role-badge-member{% endif %}" aria-hidden="true"><span class="role-badge-icon">{% if is_admin %}&#128737;{% else %}&#128100;{% endif %}</span></span>
-        <span class="role-badge role-badge-user">@{{ current_user.id }}</span>
-      </a>
-      <form class="inline-form" method="post" action="/logout">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit">Logout</button>
-      </form>
+    <div class="ss-nav__links">
+      {% if current_user.is_authenticated %}
+        <a href="{{ url_for('index') }}#saved-searches">Saved</a>
+        <a href="{{ url_for('index') }}#run-job">Run Job</a>
+        <a href="{{ url_for('reports_dashboard') }}">Reports</a>
+        <a href="{{ url_for('index') }}#notifications">Notifications</a>
+        <a href="{{ url_for('profile') }}">Profile</a>
+        {% if is_admin %}
+          <a href="{{ url_for('admin_users') }}">Users</a>
+          <a href="{{ url_for('admin_audit') }}">Audit</a>
+          <a href="{{ url_for('admin_session_log') }}">Log</a>
+        {% endif %}
+        <form class="inline-form" method="post" action="{{ url_for('logout') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit">Logout</button>
+        </form>
+      {% else %}
+        <a href="{{ url_for('login') }}">Login</a>
+      {% endif %}
     </div>
   </div>
-  {% with messages = get_flashed_messages(with_categories=true) %}
-    {% if messages %}
-      {% for category, message in messages %}
-        <div class="flash {{ category }}">{{ message }}</div>
-      {% endfor %}
-    {% endif %}
-  {% endwith %}
-</section>
+</nav>

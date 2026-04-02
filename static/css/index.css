@@ -8,12 +8,13 @@
 
 .hero {
   background:
-    radial-gradient(circle at 10% 10%, rgba(255,255,255,0.06), transparent 25%),
-    radial-gradient(circle at 88% 8%, rgba(200,154,82,0.14), transparent 22%),
-    var(--surface-dark);
-  color: #f1f4f9;
+    radial-gradient(circle at 10% 10%, rgba(255,255,255,0.9), transparent 25%),
+    radial-gradient(circle at 88% 8%, rgba(0,124,190,0.08), transparent 22%),
+    linear-gradient(180deg, #ffffff 0%, #f7fafc 100%);
+  color: var(--text);
   border-radius: 16px;
-  border: 1px solid #123a69;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
   padding: 34px 22px;
   text-align: center;
   animation: rise-in 420ms ease-out both;
@@ -22,9 +23,9 @@
 .hero-pill {
   display: inline-block;
   border-radius: 999px;
-  background: rgba(200,154,82,0.18);
-  color: #e9c27c;
-  border: 1px solid rgba(200,154,82,0.45);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border: 1px solid #cfe3ee;
   font-size: 0.76rem;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -34,7 +35,7 @@
 }
 
 .hero h1 {
-  color: #ffffff;
+  color: var(--accent-strong);
   margin-bottom: 8px;
   line-height: 1.1;
   font-size: clamp(1.8rem, 4vw, 3rem);
@@ -42,12 +43,12 @@
 }
 
 .hero h1 .accent {
-  color: var(--accent-2);
+  color: var(--accent);
 }
 
 .hero p {
   margin: 0 auto 14px;
-  color: #d5dfeb;
+  color: var(--muted);
   max-width: 760px;
   font-size: 1.03rem;
 }
@@ -61,7 +62,7 @@
   background: #ffffff;
   border-radius: 12px;
   border: 1px solid var(--border);
-  box-shadow: 0 10px 24px rgba(8, 30, 52, 0.12);
+  box-shadow: var(--shadow-sm);
   padding: 8px;
 }
 
@@ -72,13 +73,13 @@
   background: transparent;
   padding: 8px 12px;
   font-size: 0.96rem;
-  color: #1a2f4a;
+  color: var(--text);
   border-radius: 8px;
 }
 
 .hero-search input:focus {
-  border-color: #c8d6e8;
-  background: #f8fbff;
+  border-color: #cde4ef;
+  background: var(--surface-alt);
 }
 
 .hero-search button {
@@ -98,9 +99,9 @@
 }
 
 .chip {
-  border: 1px solid #355680;
-  color: #d7e4f5;
-  background: transparent;
+  border: 1px solid #c5d7e3;
+  color: var(--accent-strong);
+  background: #ffffff;
   border-radius: 999px;
   padding: 6px 11px;
   font-size: 0.82rem;
@@ -108,9 +109,9 @@
 }
 
 .chip.active {
-  background: var(--accent-2);
-  border-color: var(--accent-2);
-  color: #18283a;
+  background: var(--accent-soft);
+  border-color: #bcd8e8;
+  color: var(--accent-strong);
   font-weight: 700;
 }
 
@@ -143,9 +144,9 @@
 }
 
 .retrieval-tab-btn {
-  border: 1px solid #bfd0ee;
-  background: #eef3fb;
-  color: #17467d;
+  border: 1px solid #c9dbe7;
+  background: #ffffff;
+  color: var(--accent-strong);
   border-radius: 999px;
   padding: 7px 13px;
   font-size: 0.82rem;
@@ -154,9 +155,9 @@
 }
 
 .retrieval-tab-btn.active {
-  background: #17467d;
+  background: var(--accent);
   color: #fff;
-  border-color: #17467d;
+  border-color: var(--accent);
 }
 
 .retrieval-tab-panel {
@@ -174,9 +175,9 @@
 }
 
 .results-tab-btn {
-  border: 1px solid #bfd0ee;
-  background: #eef3fb;
-  color: #17467d;
+  border: 1px solid #c9dbe7;
+  background: #ffffff;
+  color: var(--accent-strong);
   border-radius: 999px;
   padding: 7px 13px;
   font-size: 0.82rem;
@@ -186,14 +187,14 @@
 }
 
 .results-tab-btn:hover {
-  background: #d4def5;
-  border-color: #a0b8e1;
+  background: var(--accent-soft);
+  border-color: #bcd8e8;
 }
 
 .results-tab-btn.active {
-  background: #17467d;
+  background: var(--accent);
   color: #fff;
-  border-color: #17467d;
+  border-color: var(--accent);
 }
 
 .boe-status-grid {
@@ -201,15 +202,15 @@
 }
 
 .boe-blocking-field {
-  border: 1px dashed #cdd9ec;
-  background: #f7faff;
+  border: 1px dashed #d5e2ea;
+  background: #f8fbfd;
   border-radius: 10px;
   padding: 10px 12px;
 }
 
 .boe-range-field {
-  border: 1px dashed #cdd9ec;
-  background: #f7faff;
+  border: 1px dashed #d5e2ea;
+  background: #f8fbfd;
   border-radius: 10px;
   padding: 10px 12px;
 }
@@ -220,9 +221,9 @@
 }
 
 .boe-range-btn {
-  border: 1px solid #bfd0ee;
-  background: #eef3fb;
-  color: #17467d;
+  border: 1px solid #c9dbe7;
+  background: #ffffff;
+  color: var(--accent-strong);
   border-radius: 999px;
   padding: 6px 10px;
   font-size: 0.8rem;
@@ -231,16 +232,16 @@
 }
 
 .boe-range-btn:hover {
-  background: #17467d;
+  background: var(--accent);
   color: #fff;
-  border-color: #17467d;
+  border-color: var(--accent);
 }
 
 .checkbox-label {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: #1d3557;
+  color: var(--accent-strong);
   font-weight: 700;
 }
 
@@ -250,32 +251,32 @@
 
 .boe-status-action {
   border-radius: 10px;
-  border: 1px solid #bfd0ee;
-  background: #eef3fb;
-  color: #17467d;
+  border: 1px solid #c9dbe7;
+  background: #ffffff;
+  color: var(--accent-strong);
   font-weight: 700;
   padding: 9px 14px;
   cursor: pointer;
 }
 
 .boe-status-action:hover {
-  background: #17467d;
+  background: var(--accent);
   color: #fff;
-  border-color: #17467d;
+  border-color: var(--accent);
 }
 
 .boe-status-results {
   margin-top: 14px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: #fbfdff;
+  background: #ffffff;
   padding: 10px;
 }
 
 .boe-status-results h3 {
   margin: 0 0 10px;
   font-size: 0.98rem;
-  color: #1d3557;
+  color: var(--accent-strong);
 }
 
 .boe-status-results-table th,
@@ -341,7 +342,7 @@ input[type="text"], input[type="password"], input[type="number"], select {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px;
-  background: #fbfdff;
+  background: #ffffff;
 }
 
 .job-files-table {
@@ -359,9 +360,9 @@ input[type="text"], input[type="password"], input[type="number"], select {
 }
 
 .files-toggle-btn {
-  border: 1px solid #1d5f96;
-  background: #eef3fb;
-  color: #1d5f96;
+  border: 1px solid #c9dbe7;
+  background: #ffffff;
+  color: var(--accent-strong);
   border-radius: 8px;
   padding: 6px 12px;
   font-size: 0.82rem;
@@ -370,7 +371,7 @@ input[type="text"], input[type="password"], input[type="number"], select {
 }
 
 .files-toggle-btn:hover {
-  background: #d9e7f7;
+  background: var(--accent-soft);
 }
 
 .files-table-wrap {
@@ -387,8 +388,8 @@ input[type="text"], input[type="password"], input[type="number"], select {
 }
 
 .job-files-table th {
-  background: #eef6f8;
-  color: var(--muted);
+  background: var(--surface-alt);
+  color: var(--accent-strong);
 }
 
 .status {
@@ -411,8 +412,8 @@ input[type="text"], input[type="password"], input[type="number"], select {
 }
 
 .stop-run-btn {
-  background: #8a5b00;
-  border: 1px solid #8a5b00;
+  background: #d48b00;
+  border: 1px solid #d48b00;
   color: #fff;
   padding: 5px 10px;
   border-radius: 8px;
@@ -472,9 +473,9 @@ input[type="text"], input[type="password"], input[type="number"], select {
 }
 
 .file-link-download {
-  background: #eef3fb;
-  color: #14365f;
-  border: 1px solid #bfd0ee;
+  background: #ffffff;
+  color: var(--accent-strong);
+  border: 1px solid #c9dbe7;
 }
 
 .delete-files-btn {
@@ -524,7 +525,7 @@ input[type="text"], input[type="password"], input[type="number"], select {
 .saved-card {
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: #fbfdff;
+  background: #ffffff;
   overflow: hidden;
   display: grid;
   animation: rise-in 420ms ease-out both;
@@ -558,9 +559,9 @@ input[type="text"], input[type="password"], input[type="number"], select {
 }
 
 .saved-carousel-arrow {
-  border: 1px solid #bfd0ee;
-  background: #eef3fb;
-  color: #14365f;
+  border: 1px solid #c9dbe7;
+  background: #ffffff;
+  color: var(--accent-strong);
   width: 34px;
   height: 34px;
   border-radius: 999px;
@@ -594,7 +595,7 @@ input[type="text"], input[type="password"], input[type="number"], select {
 }
 
 .saved-dot.active {
-  background: #17467d;
+  background: var(--accent);
 }
 
 .saved-head {
@@ -628,7 +629,7 @@ input[type="text"], input[type="password"], input[type="number"], select {
 .saved-action {
   border-top: 1px solid var(--border);
   padding: 10px;
-  color: var(--accent-2);
+  color: var(--accent);
   font-weight: 700;
   font-size: 0.88rem;
 }
@@ -636,9 +637,9 @@ input[type="text"], input[type="password"], input[type="number"], select {
 .cta-center {
   text-align: center;
   padding: 28px 16px;
-  border: 1px dashed #cdd8e6;
+  border: 1px dashed #d7e2ea;
   border-radius: 12px;
-  background: #f7f9fc;
+  background: #f8fbfd;
 }
 
 .cta-center p {
@@ -704,7 +705,7 @@ input[type="text"], input[type="password"], input[type="number"], select {
   min-height: 14px;
   border-radius: 6px;
   color: transparent;
-  background: #e4ecf7;
+  background: #e6f2f8;
   position: relative;
   overflow: hidden;
 }
@@ -744,11 +745,11 @@ input[type="text"], input[type="password"], input[type="number"], select {
 }
 
 .empty-state {
-  border: 1px dashed #cfd8e5;
+  border: 1px dashed #d7e2ea;
   border-radius: 12px;
   padding: 16px;
   color: var(--muted);
-  background: #f8fbff;
+  background: #f8fbfd;
   text-align: center;
   font-size: 0.92rem;
 }

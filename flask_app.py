@@ -52,6 +52,7 @@ from credential_store import (
     delete_generated_files_for_job,
     delete_retrieval_run,
     delete_portal_credentials,
+    ensure_admin_user,
     ensure_app_user,
     ensure_db_initialized,
     get_generated_file,
@@ -132,6 +133,17 @@ _jobs_lock = threading.Lock()
 _job_cancel_events = {}
 
 _db_setup_done = False
+_cleanup_lock = threading.Lock()
+_last_cleanup_at = None
+_cleanup_interval = timedelta(minutes=10)
+_dataframe_cache = {}
+_dataframe_cache_lock = threading.Lock()
+_dataframe_cache_max_entries = 8
+_report_index_cache = {}
+_recent_uploads_cache = {}
+_financial_summary_cache = {}
+_view_cache_lock = threading.Lock()
+_view_cache_ttl = timedelta(seconds=30)
 
 
 @app.before_request
@@ -142,25 +154,12 @@ def _ensure_db_initialized():
 
     try:
         ensure_db_initialized()
-
-        # 🔥 FORCE ADMIN CREATION
         if APP_ADMIN_PASSWORD_HASH:
-            ensure_app_user(
-                APP_ADMIN_USER,
-                APP_ADMIN_PASSWORD_HASH,
-                role="admin",
-                is_active=True
-            )
-            print("✅ Admin user ensured")
-
-        # Debug check
-        user = get_app_user(APP_ADMIN_USER)
-        print("🔍 Admin lookup:", user)
-
+            ensure_admin_user(APP_ADMIN_USER, APP_ADMIN_PASSWORD_HASH)
         _db_setup_done = True
 
     except Exception as e:
-        print("❌ DB INIT ERROR:", e)
+        app.logger.exception("DB initialization failed: %s", e)
         raise  # IMPORTANT: crash instead of hiding errors
 
 class AppUser(UserMixin):
@@ -187,6 +186,9 @@ def load_user(user_id):
 
 
 def _new_csrf_token():
+    token = session.get("csrf_token", "")
+    if token:
+        return token
     token = secrets.token_urlsafe(24)
     session["csrf_token"] = token
     return token
@@ -252,9 +254,19 @@ def _is_file_expired(file_path):
 
 
 def _cleanup_old_generated_files(owner_id):
+    global _last_cleanup_at
     # Storage is DB-backed; cleanup is global and no longer tied to in-memory paths.
-    delete_expired_generated_files(FILE_RETENTION_HOURS, MANUAL_UPLOAD_RETENTION_DAYS)
-    delete_expired_retrieval_runs(RUN_RETENTION_DAYS)
+    now = datetime.now(timezone.utc)
+    if _last_cleanup_at and (now - _last_cleanup_at) < _cleanup_interval:
+        return
+
+    with _cleanup_lock:
+        now = datetime.now(timezone.utc)
+        if _last_cleanup_at and (now - _last_cleanup_at) < _cleanup_interval:
+            return
+        delete_expired_generated_files(FILE_RETENTION_HOURS, MANUAL_UPLOAD_RETENTION_DAYS)
+        delete_expired_retrieval_runs(RUN_RETENTION_DAYS)
+        _last_cleanup_at = now
 
 
 def _session_log_path():
@@ -471,6 +483,34 @@ def _build_report_file_index(user_id):
     return indexed
 
 
+def _get_cached_report_file_index(user_id):
+    cache_key = str(user_id or "").strip()
+    now = datetime.now(timezone.utc)
+    with _view_cache_lock:
+        cached = _report_index_cache.get(cache_key)
+        if cached and (now - cached["created_at"]) < _view_cache_ttl:
+            return list(cached["value"])
+
+    value = _build_report_file_index(user_id)
+    with _view_cache_lock:
+        _report_index_cache[cache_key] = {"created_at": now, "value": list(value)}
+    return value
+
+
+def _get_cached_recent_uploads(user_id, limit=30):
+    cache_key = (str(user_id or "").strip(), int(limit or 30))
+    now = datetime.now(timezone.utc)
+    with _view_cache_lock:
+        cached = _recent_uploads_cache.get(cache_key)
+        if cached and (now - cached["created_at"]) < _view_cache_ttl:
+            return list(cached["value"])
+
+    value = list_manual_upload_runs_for_user(user_id, limit=limit)
+    with _view_cache_lock:
+        _recent_uploads_cache[cache_key] = {"created_at": now, "value": list(value)}
+    return value
+
+
 @app.route("/reports/upload", methods=["POST"])
 @login_required
 def reports_upload():
@@ -544,6 +584,58 @@ def _load_dataframe_from_generated_file(file_record):
     if file_key == "xlsx":
         return pd.read_excel(BytesIO(blob))
     raise ValueError("Unsupported file type for dashboard")
+
+
+def _dataframe_cache_key(file_record):
+    return (
+        str(file_record.get("user_id") or ""),
+        str(file_record.get("job_id") or ""),
+        str(file_record.get("file_key") or ""),
+        str(file_record.get("created_at") or ""),
+    )
+
+
+def _load_cached_dataframe(file_record):
+    cache_key = _dataframe_cache_key(file_record)
+    with _dataframe_cache_lock:
+        cached_df = _dataframe_cache.get(cache_key)
+        if cached_df is not None:
+            return cached_df.copy()
+
+    df = _load_dataframe_from_generated_file(file_record)
+    with _dataframe_cache_lock:
+        _dataframe_cache[cache_key] = df
+        while len(_dataframe_cache) > _dataframe_cache_max_entries:
+            oldest_key = next(iter(_dataframe_cache))
+            _dataframe_cache.pop(oldest_key, None)
+    return df.copy()
+
+
+def _get_cached_financial_summary(file_record, page=1, page_size=20, sort_by_due_date_desc=False):
+    cache_key = (
+        str(file_record.get("user_id") or ""),
+        str(file_record.get("job_id") or ""),
+        str(file_record.get("file_key") or ""),
+        str(file_record.get("created_at") or ""),
+        int(page),
+        int(page_size),
+        bool(sort_by_due_date_desc),
+    )
+    now = datetime.now(timezone.utc)
+    with _view_cache_lock:
+        cached = _financial_summary_cache.get(cache_key)
+        if cached and (now - cached["created_at"]) < _view_cache_ttl:
+            return dict(cached["value"])
+
+    value = _build_financial_dashboard(
+        _load_cached_dataframe(file_record),
+        page=page,
+        page_size=page_size,
+        sort_by_due_date_desc=sort_by_due_date_desc,
+    )
+    with _view_cache_lock:
+        _financial_summary_cache[cache_key] = {"created_at": now, "value": dict(value)}
+    return value
 
 
 def _build_financial_dashboard(df, page=1, page_size=20, sort_by_due_date_desc=False):
@@ -1175,7 +1267,12 @@ def login():
             valid_password = False
 
         if not valid_password:
-            updated = register_failed_login(app_user, LOGIN_MAX_ATTEMPTS, LOGIN_LOCK_MINUTES)
+            updated = register_failed_login(
+                app_user,
+                LOGIN_MAX_ATTEMPTS,
+                LOGIN_LOCK_MINUTES,
+                user=app_user_record,
+            )
             details = "invalid password"
             if updated and updated.get("locked_until"):
                 details = f"invalid password; locked until {updated['locked_until']}"
@@ -1183,7 +1280,8 @@ def login():
             flash("Invalid username or password", "error")
             return redirect(url_for("login"))
 
-        clear_failed_login(app_user)
+        if int(app_user_record.get("failed_attempts") or 0) or app_user_record.get("locked_until"):
+            clear_failed_login(app_user)
         login_user(
             AppUser(app_user, role=app_user_record.get("role", "user"), is_active=app_user_record.get("is_active", 1)),
             remember=remember_me,
@@ -1258,7 +1356,7 @@ def index():
     _flash_security_warnings("dashboard")
     _cleanup_old_generated_files(current_user.id)
 
-    persisted_runs = list_recent_retrieval_runs_for_user(current_user.id, limit=200)
+    persisted_runs = list_recent_retrieval_runs_for_user(current_user.id, limit=100)
     with _jobs_lock:
         live_runs = [job for job in _jobs.values() if job.get("owner") == current_user.id]
 
@@ -1268,6 +1366,32 @@ def index():
     jobs_snapshot = sorted(jobs_by_id.values(), key=lambda item: item.get("created_at", ""), reverse=True)
 
     saved_credentials = _get_portal_credentials_or_recover(current_user.id, flash_on_error=True)
+
+    def _job_file_count(job):
+        result = job.get("result") or {}
+        files = result.get("files") or {}
+        if isinstance(files, dict):
+            return len(files)
+        if isinstance(files, list):
+            return len(files)
+        return 0
+
+    active_jobs = sum(1 for job in jobs_snapshot if str(job.get("status", "")).lower() in {"queued", "running", "stopping"})
+    completed_jobs = sum(1 for job in jobs_snapshot if str(job.get("status", "")).lower() == "completed")
+    failed_jobs = sum(1 for job in jobs_snapshot if str(job.get("status", "")).lower() == "failed")
+    file_count = sum(_job_file_count(job) for job in jobs_snapshot)
+    notifications = []
+    for job in jobs_snapshot[:5]:
+        status = str(job.get("status", "unknown")).replace("_", " ").title()
+        notifications.append(
+            {
+                "kind": "danger" if str(job.get("status", "")).lower() == "failed" else "success" if str(job.get("status", "")).lower() == "completed" else "info",
+                "action": f"{job.get('job_type', 'Retrieval').replace('_', ' ').title()} • {status}",
+                "details": job.get("last_message") or "No status message available yet.",
+                "timestamp": job.get("created_at") or "",
+            }
+        )
+
     return render_template(
         "index.html",
         defaults={
@@ -1284,6 +1408,15 @@ def index():
         file_retention_hours=FILE_RETENTION_HOURS,
         is_admin=getattr(current_user, "is_admin", False),
         current_role=getattr(current_user, "role", "user"),
+        dashboard_metrics={
+            "credentials": 1 if saved_credentials else 0,
+            "active_jobs": active_jobs,
+            "completed_jobs": completed_jobs,
+            "failed_jobs": failed_jobs,
+            "files": file_count,
+            "reports": len(jobs_snapshot),
+        },
+        dashboard_notifications=notifications,
         csrf_token=_new_csrf_token(),
     )
 
@@ -1383,7 +1516,7 @@ def password_required():
 def reports_dashboard():
     _cleanup_old_generated_files(current_user.id)
 
-    report_files = _build_report_file_index(current_user.id)
+    report_files = _get_cached_report_file_index(current_user.id)
     selected_job_id = request.args.get("job_id", "").strip()
     selected_file_key = request.args.get("file_key", "").strip().lower()
     try:
@@ -1407,7 +1540,7 @@ def reports_dashboard():
     selected_file_name = ""
     selected_retrieval_type = "financial"
     sort_by_due_date_desc = False
-    recent_uploads = list_manual_upload_runs_for_user(current_user.id, limit=30)
+    recent_uploads = _get_cached_recent_uploads(current_user.id, limit=30)
     if selected_job_id and selected_file_key in {"csv", "xlsx"}:
         selected_meta = next(
             (
@@ -1424,9 +1557,8 @@ def reports_dashboard():
         record = get_generated_file(current_user.id, selected_job_id, selected_file_key)
         if record:
             try:
-                df = _load_dataframe_from_generated_file(record)
-                selected_summary = _build_financial_dashboard(
-                    df,
+                selected_summary = _get_cached_financial_summary(
+                    record,
                     page=selected_page,
                     page_size=selected_page_size,
                     sort_by_due_date_desc=sort_by_due_date_desc,
@@ -1530,7 +1662,7 @@ def reports_preview_ajax():
     sort_by_due_date_desc = retrieval_type == "boe_status_dates"
 
     try:
-        df = _load_dataframe_from_generated_file(record)
+        df = _load_cached_dataframe(record)
         summary = _build_financial_dashboard(
             df,
             page=selected_page,
@@ -1688,7 +1820,7 @@ def reports_account_pricing_save():
     try:
         record = get_generated_file(current_user.id, selected_job_id, selected_file_key)
         if record:
-            df = _load_dataframe_from_generated_file(record)
+            df = _load_cached_dataframe(record)
             account_report = _build_account_report(df, user_id=current_user.id)
             target = next((acc for acc in account_report.get("accounts", []) if str(acc.get("name") or "") == account_name), None)
             if target:
@@ -1745,7 +1877,7 @@ def reports_account_download(account_name):
         abort(404)
 
     try:
-        df = _load_dataframe_from_generated_file(record)
+        df = _load_cached_dataframe(record)
         account_report = _build_account_report(df, user_id=current_user.id)
         company_profile = _company_profile_from_user_record(get_app_user(current_user.id))
         
@@ -1814,7 +1946,7 @@ def reports_account_download_priced(account_name, fmt):
         abort(404)
 
     try:
-        df = _load_dataframe_from_generated_file(record)
+        df = _load_cached_dataframe(record)
         account_report = _build_account_report(df, user_id=current_user.id)
         account_data = None
         for acc in account_report.get("accounts", []):
@@ -1878,7 +2010,7 @@ def reports_account_view(account_name):
         abort(404)
 
     try:
-        df = _load_dataframe_from_generated_file(record)
+        df = _load_cached_dataframe(record)
         account_report = _build_account_report(df, user_id=current_user.id)
         company_profile = _company_profile_from_user_record(get_app_user(current_user.id))
         
@@ -1927,7 +2059,7 @@ def reports_account_view_all():
         abort(404)
 
     try:
-        df = _load_dataframe_from_generated_file(record)
+        df = _load_cached_dataframe(record)
         account_report = _build_account_report(df, user_id=current_user.id)
         company_profile = _company_profile_from_user_record(get_app_user(current_user.id))
         pricing_by_account = list_account_pricing_profiles_for_file(
@@ -1960,7 +2092,7 @@ def reports_account_download_all():
         abort(404)
 
     try:
-        df = _load_dataframe_from_generated_file(record)
+        df = _load_cached_dataframe(record)
         account_report = _build_account_report(df, user_id=current_user.id)
         company_profile = _company_profile_from_user_record(get_app_user(current_user.id))
         pricing_by_account = list_account_pricing_profiles_for_file(
@@ -2002,7 +2134,7 @@ def reports_account_download_priced_all(fmt):
         abort(404)
 
     try:
-        df = _load_dataframe_from_generated_file(record)
+        df = _load_cached_dataframe(record)
         account_report = _build_account_report(df, user_id=current_user.id)
         pricing_by_account = list_account_pricing_profiles_for_file(
             current_user.id,
@@ -3040,4 +3172,4 @@ def logs():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5001, debug=True)

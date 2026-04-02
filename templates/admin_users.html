@@ -6,17 +6,26 @@
   <title>User Management</title>
   <style>
     :root {
-      --bg: #f4f6f8;
+      --bg: #fbfffe;
       --card: #ffffff;
-      --text: #1c2a39;
-      --accent: #005f73;
-      --border: #d9e1e6;
-      --muted: #607080;
+      --text: #1a1a1a;
+      --accent: #007cbe;
+      --accent-hover: #005f91;
+      --accent-soft: #e6f2f8;
+      --accent-strong: #003f60;
+      --danger: #96031a;
+      --danger-hover: #6d0212;
+      --danger-soft: #f8d7da;
+      --border: #e0e0e0;
+      --muted: #666666;
+      --surface-alt: #f4f6f8;
+      --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+      --shadow-md: 0 8px 24px rgba(15, 23, 42, 0.10);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      font-family: Inter, "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
       color: var(--text);
       background: var(--bg);
       padding: 24px;
@@ -28,9 +37,9 @@
       border: 1px solid var(--border);
       border-radius: 14px;
       padding: 16px;
-      box-shadow: 0 10px 30px rgba(7, 38, 61, 0.06);
+      box-shadow: var(--shadow-sm);
     }
-    h1, h2 { margin-top: 0; color: var(--accent); }
+    h1, h2 { margin-top: 0; color: var(--accent-strong); }
     .topbar {
       display: flex;
       justify-content: space-between;
@@ -47,15 +56,18 @@
       border-radius: 10px;
       padding: 10px;
       font-size: 0.95rem;
+      background: #fff;
+      color: var(--text);
     }
     button {
-      border: 0;
+      border: 1px solid var(--accent);
       border-radius: 10px;
       padding: 10px 14px;
       color: #fff;
-      background: linear-gradient(120deg, var(--accent), #0a9396);
-      font-weight: 600;
+      background: linear-gradient(120deg, var(--accent), var(--accent-hover));
+      font-weight: 700;
       cursor: pointer;
+      box-shadow: var(--shadow-sm);
     }
     table { width: 100%; border-collapse: collapse; }
     th, td {
@@ -65,7 +77,7 @@
       vertical-align: top;
       font-size: 0.9rem;
     }
-    th { background: #eef6f8; color: var(--muted); }
+    th { background: var(--surface-alt); color: var(--accent-strong); }
     .row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
     .inline { display: inline; }
     .inline-block { display: inline-block; }
@@ -78,57 +90,57 @@
       font-weight: 700;
       border: 1px solid transparent;
     }
-    .status-active { background: #e9f8f0; color: #156b4e; border-color: #9ad5bc; }
-    .status-inactive { background: #f1f4f9; color: #3d5068; border-color: #cbd7e5; }
-    .status-locked { background: #fff4e8; color: #7f4f0f; border-color: #f0c58f; }
-    .status-expiring { background: #fff7df; color: #845200; border-color: #f0d392; }
+    .status-active { background: #ecf8f2; color: #1d6d35; border-color: #9fd6b4; }
+    .status-inactive { background: var(--surface-alt); color: var(--accent-strong); border-color: #d4deef; }
+    .status-locked { background: #fff8ea; color: #7e4d00; border-color: #e4c48e; }
+    .status-expiring { background: var(--accent-soft); color: var(--accent-strong); border-color: #cfe3ee; }
     .flash {
       border-radius: 10px;
       padding: 10px 12px;
       margin-bottom: 10px;
       border: 1px solid var(--border);
     }
-    .flash.success { background: #ecfdf8; border-color: #88d7c8; color: #186457; }
-    .flash.error { background: #fff4f4; border-color: #e8a2a2; color: #8f1a1a; }
+    .flash.success { background: #ecf8f2; border-color: #9fd6b4; color: #1d6d35; }
+    .flash.error { background: var(--danger-soft); border-color: #e6b7b7; color: var(--danger); }
     .ghost-btn {
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 8px 10px;
-      background: #f8fbff;
-      color: #1f3a56;
+      background: #ffffff;
+      color: var(--accent-strong);
       font-size: 0.84rem;
       font-weight: 700;
       cursor: pointer;
     }
     .danger-btn {
-      border-color: #e8a2a2;
-      background: #fff4f4;
-      color: #8f1a1a;
+      border-color: var(--danger);
+      background: #fff4f5;
+      color: var(--danger);
     }
     dialog {
       border: 1px solid var(--border);
       border-radius: 14px;
       width: min(520px, 92vw);
       padding: 0;
-      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.2);
+      box-shadow: var(--shadow-md);
     }
-    dialog::backdrop { background: rgba(17, 30, 44, 0.35); }
+    dialog::backdrop { background: rgba(15, 23, 42, 0.28); }
     .modal-body { padding: 16px; display: grid; gap: 10px; }
-    .modal-title { margin: 0; color: var(--accent); }
+    .modal-title { margin: 0; color: var(--accent-strong); }
     .modal-sub { color: var(--muted); font-size: 0.9rem; margin: 0; }
     .modal-warning {
       margin: 0;
       padding: 8px 10px;
       border-radius: 8px;
       border: 1px solid #d7e4f2;
-      background: #f4f9ff;
-      color: #18456b;
+      background: #f8fbfd;
+      color: var(--accent-strong);
       font-size: 0.87rem;
     }
     .modal-warning.danger {
       border-color: #e8a2a2;
-      background: #fff4f4;
-      color: #8f1a1a;
+      background: var(--danger-soft);
+      color: var(--danger);
     }
     .confirm-check { display: flex; gap: 8px; align-items: center; font-size: 0.88rem; color: var(--muted); }
     .modal-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }

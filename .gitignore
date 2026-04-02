@@ -20,7 +20,7 @@ myenv/
 *.db
 *.sqlite
 *.sqlite3
-*.db-*
+*.db*
 
 # Logs and runtime output
 *.log

@@ -4,15 +4,18 @@
 
 .profile-hero {
   border-radius: 16px;
-  border: 1px solid #123a69;
+  border: 1px solid var(--border);
   padding: 26px 22px;
-  background: linear-gradient(130deg, #02224a, #0f3f71);
-  color: #eef4fb;
+  background:
+    radial-gradient(circle at 12% 10%, rgba(255,255,255,0.9), transparent 24%),
+    linear-gradient(180deg, #ffffff 0%, #f7fafc 100%);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
 }
 
 .profile-hero p {
   margin: 0;
-  color: #d8e5f4;
+  color: var(--muted);
 }
 
 .grid {
@@ -87,15 +90,15 @@ textarea {
 }
 
 .close-account-card {
-  border-color: #e8c8c8;
-  background: #fff9f9;
+  border-color: #e3c1c1;
+  background: #fffafb;
 }
 
 .danger-btn {
-  border: 1px solid #8f1a1a;
+  border: 1px solid var(--danger);
   border-radius: 10px;
   padding: 10px 14px;
-  background: #8f1a1a;
+  background: var(--danger);
   color: #fff;
   font-weight: 700;
   cursor: pointer;
@@ -106,11 +109,11 @@ dialog {
   border-radius: 14px;
   width: min(520px, 92vw);
   padding: 0;
-  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.22);
+  box-shadow: var(--shadow-lg);
 }
 
 dialog::backdrop {
-  background: rgba(16, 28, 43, 0.34);
+  background: rgba(15, 23, 42, 0.28);
 }
 
 .close-dialog-body {

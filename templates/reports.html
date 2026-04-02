@@ -432,7 +432,7 @@
           datasets: [{
             label: 'Entries',
             data: statusData.map((x) => x.count),
-            backgroundColor: '#17467d',
+            backgroundColor: '#007CBE',
             borderRadius: 6,
           }],
         },
@@ -447,7 +447,7 @@
           labels: regimeData.map((x) => x.label),
           datasets: [{
             data: regimeData.map((x) => x.count),
-            backgroundColor: ['#17467d', '#2a9d8f', '#c89a52', '#8f1a1a', '#5b7ea7', '#1d3557', '#7d5a2f', '#5b8f7a'],
+            backgroundColor: ['#007CBE', '#66A9D4', '#003F60', '#2A9D8F', '#96031A', '#5B7EA7', '#7D5A2F', '#5B8F7A'],
           }],
         },
         options: { responsive: true },
@@ -462,7 +462,7 @@
           datasets: [{
             label: 'Entries',
             data: creatorData.map((x) => x.count),
-            backgroundColor: '#2a9d8f',
+            backgroundColor: '#66A9D4',
             borderRadius: 6,
           }],
         },
@@ -478,8 +478,8 @@
           datasets: [{
             label: 'Entries per day',
             data: timeline.map((x) => x.count),
-            borderColor: '#17467d',
-            backgroundColor: 'rgba(23, 70, 125, 0.2)',
+            borderColor: '#007CBE',
+            backgroundColor: 'rgba(0, 124, 190, 0.16)',
             fill: true,
             tension: 0.25,
           }],
@@ -496,7 +496,7 @@
           datasets: [{
             label: 'Entries',
             data: boeStatusData.map((x) => x.count),
-            backgroundColor: '#1d6d35',
+            backgroundColor: '#003F60',
             borderRadius: 6,
           }],
         },
@@ -512,8 +512,8 @@
           datasets: [{
             label: 'BOE due dates per day',
             data: boeDueTimeline.map((x) => x.count),
-            borderColor: '#1d6d35',
-            backgroundColor: 'rgba(29, 109, 53, 0.18)',
+            borderColor: '#96031A',
+            backgroundColor: 'rgba(150, 3, 26, 0.14)',
             fill: true,
             tension: 0.25,
           }],

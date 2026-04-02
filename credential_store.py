@@ -66,6 +66,86 @@ _FERNET = _build_fernet()
 
 _db_initialized = False
 _db_init_lock = threading.Lock()
+_app_user_cache = {}
+_app_user_cache_lock = threading.Lock()
+_generated_file_cache = {}
+_generated_file_cache_lock = threading.Lock()
+_list_app_users_cache = None
+_list_app_users_cache_lock = threading.Lock()
+
+
+def _cache_app_user(user_id, user_record):
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        return
+    with _app_user_cache_lock:
+        _app_user_cache[normalized_user_id] = dict(user_record) if user_record else None
+
+
+def _get_cached_app_user(user_id):
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        return None
+    with _app_user_cache_lock:
+        cached = _app_user_cache.get(normalized_user_id, None)
+    return dict(cached) if isinstance(cached, dict) else cached
+
+
+def _invalidate_app_user_cache(user_id=None):
+    with _app_user_cache_lock:
+        if user_id is None:
+            _app_user_cache.clear()
+            return
+        _app_user_cache.pop(str(user_id or "").strip(), None)
+
+
+def _generated_file_cache_key(user_id, job_id, file_key):
+    return (str(user_id or "").strip(), str(job_id or "").strip(), str(file_key or "").strip())
+
+
+def _get_cached_generated_file(user_id, job_id, file_key):
+    cache_key = _generated_file_cache_key(user_id, job_id, file_key)
+    with _generated_file_cache_lock:
+        cached = _generated_file_cache.get(cache_key)
+    return dict(cached) if isinstance(cached, dict) else cached
+
+
+def _cache_generated_file(user_id, job_id, file_key, file_record):
+    cache_key = _generated_file_cache_key(user_id, job_id, file_key)
+    with _generated_file_cache_lock:
+        _generated_file_cache[cache_key] = dict(file_record) if file_record else None
+
+
+def _invalidate_generated_file_cache(user_id=None, job_id=None, file_key=None):
+    with _generated_file_cache_lock:
+        if user_id is None and job_id is None and file_key is None:
+            _generated_file_cache.clear()
+            return
+        target_key = _generated_file_cache_key(user_id, job_id, file_key)
+        keys_to_delete = [
+            key for key in _generated_file_cache
+            if all(not target_part or key[idx] == target_part for idx, target_part in enumerate(target_key))
+        ]
+        for key in keys_to_delete:
+            _generated_file_cache.pop(key, None)
+
+
+def _cache_list_app_users(users):
+    global _list_app_users_cache
+    with _list_app_users_cache_lock:
+        _list_app_users_cache = [dict(user) for user in users]
+
+
+def _get_cached_list_app_users():
+    with _list_app_users_cache_lock:
+        cached = _list_app_users_cache
+    return [dict(user) for user in cached] if cached is not None else None
+
+
+def _invalidate_list_app_users_cache():
+    global _list_app_users_cache
+    with _list_app_users_cache_lock:
+        _list_app_users_cache = None
 
 class _LibsqlConnectionWrapper:
     """Wrapper around libsql connection to support dict-like row access via row_factory simulation."""
@@ -254,6 +334,8 @@ def _connect():
 
 
 def _sync_if_supported(conn):
+    if DB_BACKEND == "turso":
+        return
     sync = getattr(conn, "sync", None)
     if callable(sync):
         try:
@@ -465,6 +547,23 @@ def ensure_db_initialized():
             logging.error(f"CRITICAL: Failed to initialize database: {e}", exc_info=True)
             # RAISE the exception so we can see what's actually wrong
             raise
+
+
+def ensure_admin_user(user_id, password_hash):
+    if not user_id or not password_hash:
+        return None
+
+    existing_user = get_app_user(user_id)
+    if existing_user:
+        if (
+            existing_user.get("password_hash") == password_hash
+            and str(existing_user.get("role") or "user") == "admin"
+            and bool(existing_user.get("is_active", 0))
+        ):
+            return existing_user
+
+    ensure_app_user(user_id, password_hash, role="admin", is_active=True)
+    return get_app_user(user_id)
 
 
 def upsert_account_alias_rule(user_id, ref_key, canonical_account, decision_type="accept"):
@@ -866,6 +965,22 @@ def save_generated_file(job_id, user_id, file_key, file_name, mime_type, file_bl
     finally:
         conn.close()
 
+    _cache_generated_file(
+        user_id,
+        job_id,
+        file_key,
+        {
+            "id": None,
+            "job_id": job_id,
+            "user_id": user_id,
+            "file_key": file_key,
+            "file_name": file_name,
+            "mime_type": mime_type,
+            "file_blob": file_blob,
+            "created_at": ts,
+        },
+    )
+
 
 def list_recent_retrieval_runs_for_user(user_id, limit=200):
     conn = _connect()
@@ -880,15 +995,19 @@ def list_recent_retrieval_runs_for_user(user_id, limit=200):
             """,
             (user_id, limit),
         ).fetchall()
-        file_rows = conn.execute(
-            """
-            SELECT job_id, file_key, file_name, created_at
-            FROM generated_files
-            WHERE user_id = ?
-            ORDER BY id DESC
-            """,
-            (user_id,),
-        ).fetchall()
+        job_ids = [str(row["job_id"]) for row in run_rows if row.get("job_id")]
+        file_rows = []
+        if job_ids:
+            placeholders = ", ".join(["?"] * len(job_ids))
+            file_rows = conn.execute(
+                f"""
+                SELECT job_id, file_key, file_name, created_at
+                FROM generated_files
+                WHERE user_id = ? AND job_id IN ({placeholders})
+                ORDER BY id DESC
+                """,
+                (user_id, *job_ids),
+            ).fetchall()
     finally:
         conn.close()
 
@@ -925,14 +1044,61 @@ def list_recent_retrieval_runs_for_user(user_id, limit=200):
 
 
 def get_retrieval_run_for_user(user_id, job_id):
-    runs = list_recent_retrieval_runs_for_user(user_id, limit=500)
-    for run in runs:
-        if run.get("id") == job_id:
-            return run
-    return None
+    conn = _connect()
+    try:
+        row = conn.execute(
+            """
+            SELECT job_id, user_id, status, last_message, row_count, created_at, ended_at, payload_json
+            FROM retrieval_runs
+            WHERE user_id = ? AND job_id = ?
+            """,
+            (user_id, job_id),
+        ).fetchone()
+        if not row:
+            return None
+        file_rows = conn.execute(
+            """
+            SELECT job_id, file_key, file_name, created_at
+            FROM generated_files
+            WHERE user_id = ? AND job_id = ?
+            ORDER BY id DESC
+            """,
+            (user_id, job_id),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    try:
+        payload = json.loads(row["payload_json"] or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+
+    files = {}
+    for file_row in file_rows:
+        files[file_row["file_key"]] = {
+            "name": file_row["file_name"],
+            "created_at": file_row["created_at"],
+        }
+
+    return {
+        "id": row["job_id"],
+        "owner": row["user_id"],
+        "status": row["status"],
+        "last_message": row["last_message"] or "",
+        "created_at": row["created_at"] or "",
+        "ended_at": row["ended_at"],
+        "payload": payload,
+        "result": {
+            "row_count": int(row["row_count"] or 0),
+            "files": files,
+        },
+    }
 
 
 def get_generated_file(user_id, job_id, file_key):
+    cached_record = _get_cached_generated_file(user_id, job_id, file_key)
+    if cached_record is not None:
+        return cached_record
     conn = _connect()
     try:
         row = conn.execute(
@@ -947,8 +1113,9 @@ def get_generated_file(user_id, job_id, file_key):
         conn.close()
 
     if not row:
+        _cache_generated_file(user_id, job_id, file_key, None)
         return None
-    return {
+    out = {
         "id": row["id"],
         "job_id": row["job_id"],
         "user_id": row["user_id"],
@@ -958,6 +1125,8 @@ def get_generated_file(user_id, job_id, file_key):
         "file_blob": row["file_blob"],
         "created_at": row["created_at"],
     }
+    _cache_generated_file(user_id, job_id, file_key, out)
+    return out
 
 
 def delete_expired_generated_files(retention_hours, manual_upload_retention_days=180):
@@ -1255,6 +1424,26 @@ def ensure_app_user(
     finally:
         conn.close()
 
+    _cache_app_user(
+        user_id,
+        {
+            "user_id": user_id,
+            "password_hash": password_hash,
+            "role": normalized_role,
+            "is_active": active_value,
+            "failed_attempts": 0,
+            "locked_until": None,
+            "must_change_password": must_change_value,
+            "password_changed_at": changed_at,
+            "email": normalized_email,
+            "company_name": None,
+            "company_address": None,
+            "company_phone": None,
+            "company_logo_path": None,
+            "updated_at": now,
+        },
+    )
+
 
 def get_app_user_by_email(email):
     normalized_email = (email or "").strip().lower()
@@ -1278,6 +1467,10 @@ def get_app_user_by_email(email):
 
 
 def get_app_user(user_id):
+    cached_user = _get_cached_app_user(user_id)
+    if cached_user is not None:
+        return cached_user
+
     conn = _connect()
     try:
         row = conn.execute(
@@ -1292,17 +1485,16 @@ def get_app_user(user_id):
         conn.close()
 
     if not row:
+        _cache_app_user(user_id, None)
         return None
 
-    # If row is already a dict (from _LibsqlCursor), return it
-    # If it's a tuple (from sqlite3), convert it to dict
-    if isinstance(row, dict):
-        return row
-    return row
+    out = dict(row) if not isinstance(row, dict) else dict(row)
+    _cache_app_user(user_id, out)
+    return out
 
 
-def register_failed_login(user_id, max_attempts, lock_minutes):
-    user = get_app_user(user_id)
+def register_failed_login(user_id, max_attempts, lock_minutes, user=None):
+    user = user or get_app_user(user_id)
     if not user:
         return None
 
@@ -1312,6 +1504,8 @@ def register_failed_login(user_id, max_attempts, lock_minutes):
         locked_until = (datetime.now(timezone.utc) + timedelta(minutes=lock_minutes)).isoformat()
         failed_attempts = 0
 
+    updated_at = datetime.now(timezone.utc).isoformat()
+
     conn = _connect()
     try:
         conn.execute(
@@ -1320,16 +1514,42 @@ def register_failed_login(user_id, max_attempts, lock_minutes):
             SET failed_attempts = ?, locked_until = ?, updated_at = ?
             WHERE user_id = ?
             """,
-            (failed_attempts, locked_until, datetime.now(timezone.utc).isoformat(), user_id),
+            (failed_attempts, locked_until, updated_at, user_id),
         )
         conn.commit()
     finally:
         conn.close()
 
-    return get_app_user(user_id)
+    _cache_generated_file(
+        user_id,
+        job_id,
+        file_key,
+        {
+            "id": None,
+            "job_id": job_id,
+            "user_id": user_id,
+            "file_key": file_key,
+            "file_name": file_name,
+            "mime_type": mime_type,
+            "file_blob": file_blob,
+            "created_at": ts,
+        },
+    )
+
+    updated_user = dict(user)
+    updated_user["failed_attempts"] = failed_attempts
+    updated_user["locked_until"] = locked_until
+    updated_user["updated_at"] = updated_at
+    _cache_app_user(user_id, updated_user)
+    return updated_user
 
 
 def clear_failed_login(user_id):
+    cached_user = _get_cached_app_user(user_id)
+    if cached_user and not int(cached_user.get("failed_attempts") or 0) and not cached_user.get("locked_until"):
+        return
+
+    updated_at = datetime.now(timezone.utc).isoformat()
     conn = _connect()
     try:
         conn.execute(
@@ -1338,14 +1558,26 @@ def clear_failed_login(user_id):
             SET failed_attempts = 0, locked_until = NULL, updated_at = ?
             WHERE user_id = ?
             """,
-            (datetime.now(timezone.utc).isoformat(), user_id),
+            (updated_at, user_id),
         )
         conn.commit()
     finally:
         conn.close()
 
+    if cached_user:
+        cached_user["failed_attempts"] = 0
+        cached_user["locked_until"] = None
+        cached_user["updated_at"] = updated_at
+        _cache_app_user(user_id, cached_user)
+    else:
+        _invalidate_app_user_cache(user_id)
+
 
 def list_app_users():
+    cached_users = _get_cached_list_app_users()
+    if cached_users is not None:
+        return cached_users
+
     conn = _connect()
     try:
         rows = conn.execute(
@@ -1358,7 +1590,9 @@ def list_app_users():
     finally:
         conn.close()
 
-    return [dict(row) for row in rows]
+    out = [dict(row) for row in rows]
+    _cache_list_app_users(out)
+    return out
 
 
 def set_user_password(user_id, password_hash, must_change_password=False):
@@ -1376,6 +1610,8 @@ def set_user_password(user_id, password_hash, must_change_password=False):
         conn.commit()
     finally:
         conn.close()
+    _invalidate_app_user_cache(user_id)
+    _invalidate_list_app_users_cache()
 
 
 def set_user_active(user_id, is_active):
@@ -1392,6 +1628,8 @@ def set_user_active(user_id, is_active):
         conn.commit()
     finally:
         conn.close()
+    _invalidate_app_user_cache(user_id)
+    _invalidate_list_app_users_cache()
 
 
 def set_user_role(user_id, role):
@@ -1409,6 +1647,8 @@ def set_user_role(user_id, role):
         conn.commit()
     finally:
         conn.close()
+    _invalidate_app_user_cache(user_id)
+    _invalidate_list_app_users_cache()
 
 
 def set_user_email(user_id, email):
@@ -1426,6 +1666,8 @@ def set_user_email(user_id, email):
         conn.commit()
     finally:
         conn.close()
+    _invalidate_app_user_cache(user_id)
+    _invalidate_list_app_users_cache()
 
 
 def set_user_company_profile(user_id, company_name=None, company_address=None, company_phone=None, company_logo_path=None):
@@ -1449,6 +1691,8 @@ def set_user_company_profile(user_id, company_name=None, company_address=None, c
         conn.commit()
     finally:
         conn.close()
+    _invalidate_app_user_cache(user_id)
+    _invalidate_list_app_users_cache()
 
 
 def delete_app_user(user_id):
@@ -1466,6 +1710,8 @@ def delete_app_user(user_id):
         return int(cursor.rowcount or 0)
     finally:
         conn.close()
+        _invalidate_app_user_cache(user_id)
+        _invalidate_list_app_users_cache()
 
 
 def log_auth_event(user_id, event_type, outcome, source_ip=None, details=None):
